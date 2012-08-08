@@ -1,0 +1,30 @@
+{
+  "name": "httpsys",
+  "author": {
+    "name": "Tomasz Janczuk <tomasz@janczuk.org>",
+    "url": "http://tomasz.janczuk.org",
+    "twitter": "tjanczuk"
+  },
+  "version": "0.1.0-pre",
+  "description": "Native HTTP stack for node.js on Windows",
+  "tags" : ["http", "https", "http.sys", "windows"],
+  "main": "./lib/httpsys.js",
+  "engines": { "node": "0.6.x" },
+  "licenses": [ { "type": "Apache", "url": "http://www.apache.org/licenses/LICENSE-2.0" } ],
+  "dependencies": {
+  },
+  "devDependencies": {
+    "mocha": "1.2.0"
+  },
+  "homepage": "https://github.com/tjanczuk/httpsys",
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:tjanczuk/httpsys.git"
+  },
+  "bugs" : {
+    "url" : "http://github.com/tjanczuk/httpsys/issues"
+  },
+  "scripts": {
+    "install": "node checkplatform.js"
+  }
+}
