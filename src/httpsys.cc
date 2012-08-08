@@ -5,11 +5,247 @@ using namespace v8;
 int initialized;
 int initialBufferSize;
 Persistent<Function> callback;
+Persistent<Function> bufferConstructor;
 
-void https_callback(uv_async_t* handle, int status)
+// Global V8 strings reused across requests
+Handle<String> v8requestQueue;
+Handle<String> v8method;
+Handle<String> v8req;
+Handle<String> v8httpHeaders;
+Handle<String> v8httpVersionMajor;
+Handle<String> v8httpVersionMinor;
+Handle<String> v8eventType;
+Handle<String> v8code;
+Handle<String> v8url;
+Handle<String> v8uv_httpsys;
+Handle<String> v8data;
+
+// Maps HTTP_HEADER_ID enum to v8 string
+// http://msdn.microsoft.com/en-us/library/windows/desktop/aa364526(v=vs.85).aspx
+Handle<String> v8httpRequestHeaderNames[HttpHeaderRequestMaximum];
+char* requestHeaders[] = {
+    "Cache-Control",
+    "Connection",
+    "Date",
+    "Keep-Alive",
+    "Pragma",
+    "Trailer",
+    "Transfer-Encoding",
+    "Upgrade",
+    "Via",
+    "Warning",
+    "Alive",
+    "Content-Length",
+    "Content-Type",
+    "Content-Encoding",
+    "Content-Language",
+    "Content-Location",
+    "Content-MD5",
+    "Content-Range",
+    "Expires",
+    "Last-Modified",
+    "Accept",
+    "Accept-Charset",
+    "Accept-Encoding",
+    "Accept-Language",
+    "Authorization",
+    "Cookie",
+    "Expect",
+    "From",
+    "Host",
+    "If-Match",
+    "If-Modified-Since",
+    "If-None-Match",
+    "If-Range",
+    "If-Unmodified-Since",
+    "Max-Forwards",
+    "Proxy-Authorization",
+    "Referer",
+    "Range",
+    "Te",
+    "Translate",
+    "User-Agent"
+    // NULL, // HttpHeaderRequestMaximum
+    // "Accept-Ranges",
+    // "Age",
+    // "ETag",
+    // "Location",
+    // "Proxy-Authenticate",
+    // "Retry-After",
+    // "Server",
+    // "Set-Cookie",
+    // "Vary",
+    // "WWW-Authenticate"
+};
+
+// Maps HTTP_VERB enum to V8 string
+// http://msdn.microsoft.com/en-us/library/windows/desktop/aa364664(v=vs.85).aspx
+Handle<String> v8verbs[HttpVerbMaximum];
+char* verbs[] = {
+    NULL,
+    NULL,
+    NULL,
+    "OPTIONS",
+    "GET",
+    "HEAD",
+    "POST",
+    "PUT",
+    "DETELE",
+    "TRACE",
+    "CONNECT",
+    "TRACK",
+    "MOVE",
+    "COPY",
+    "PROPFIND",
+    "PROPPATCH",
+    "MKCOL",
+    "LOCK",
+    "UNLOCK",
+    "SEARCH"
+};
+
+// Processing common to all callbacks from HTTP.SYS:
+// - map the uv_async_t handle to uv_httpsys_t
+// - decrement event loop reference count to indicate completion of async operation
+#define HTTPSYS_CALLBACK_PREAMBLE \
+    HandleScope handleScope; \
+    uv_httpsys_t* uv_httpsys = CONTAINING_RECORD(handle, uv_httpsys_t, uv_async); \
+    uv_unref(uv_httpsys->uv_async.loop); \
+    PHTTP_REQUEST request = (PHTTP_REQUEST)uv_httpsys->buffer; 
+
+Handle<Object> httpsys_create_event(uv_httpsys_t* uv_httpsys, int eventType)
 {
-	uv_httpsys_t* uv_httpsys = CONTAINING_RECORD(handle, uv_httpsys_t, uv_async);
-    printf("in native callback!\n");
+    HandleScope handleScope;
+    PHTTP_REQUEST request = (PHTTP_REQUEST)uv_httpsys->buffer; 
+    Handle<Object> event = Object::New(); 
+    event->Set(v8eventType, Integer::NewFromUnsigned(eventType));
+    event->Set(v8uv_httpsys, Integer::NewFromUnsigned((uint32_t)uv_httpsys)); 
+    event->Set(v8requestQueue, Integer::NewFromUnsigned((uint32_t)uv_httpsys->requestQueue)); 
+
+    return handleScope.Close(event);
+}
+
+Handle<Value> httpsys_notify_error(uv_httpsys_t* uv_httpsys, uv_httpsys_event_type errorType, int code)
+{
+    HandleScope handleScope;
+
+    Handle<Object> error = httpsys_create_event(uv_httpsys, errorType);
+    error->Set(v8code, Integer::NewFromUnsigned(code));
+    Handle<Value> argv[1] = { error };
+
+    return handleScope.Close(callback->Call(Context::GetCurrent()->Global(), 1, argv));
+}
+
+void httpsys_new_request_callback(uv_async_t* handle, int status)
+{
+    HTTPSYS_CALLBACK_PREAMBLE
+    HRESULT hr;
+
+    // Copy the request ID assigned to the request by HTTP.SYS to uv_httpsys 
+    // to start subsequent async operations related to this request
+
+    uv_httpsys->requestId = request->RequestId;
+
+    // Initiate pending read for a new HTTP request to replace the one that just completed
+
+    if (S_OK != (hr = httpsys_initiate_new_request(uv_httpsys->requestQueue)))
+    {
+        // Initiation failed - notify JavaScript
+        httpsys_notify_error(uv_httpsys, HTTPSYS_ERROR_INITIALIZING_REQUEST, hr);
+    }
+
+    // Process async completion
+
+    if (S_OK != uv_httpsys->uv_async.async_req.overlapped.Internal)
+    {
+        // Async completion failed - notify JavaScript
+        httpsys_notify_error(
+            uv_httpsys, 
+            HTTPSYS_ERROR_NEW_REQUEST,
+            uv_httpsys->uv_async.async_req.overlapped.Internal);
+        httpsys_free(uv_httpsys);
+        uv_httpsys = NULL;
+    }
+    else
+    {
+        // New request received - notify JavaScript
+
+        Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_NEW_REQUEST);
+
+        // Create the 'req' object representing the request
+
+        Handle<Object> req = Object::New();
+        event->Set(v8req, req);
+
+        // Add HTTP verb information
+
+        if (HttpVerbUnknown == request->Verb)
+        {
+            req->Set(v8method, String::New(request->pUnknownVerb));
+        }
+        else 
+        {
+            req->Set(v8method, v8verbs[request->Verb]);
+        }
+
+        // Add known HTTP header information
+
+        Handle<Object> headers = Object::New();
+        req->Set(v8httpHeaders, headers);
+
+        for (int i = 0; i < HttpHeaderRequestMaximum; i++)
+        {
+            if (request->Headers.KnownHeaders[i].RawValueLength > 0)
+            {
+                headers->Set(v8httpRequestHeaderNames[i], String::New(
+                    request->Headers.KnownHeaders[i].pRawValue,
+                    request->Headers.KnownHeaders[i].RawValueLength));
+            }
+        }
+
+        // Add custom HTTP header information
+
+        for (int i = 0; i < request->Headers.UnknownHeaderCount; i++)
+        {
+            headers->Set(
+                String::New(
+                    request->Headers.pUnknownHeaders[i].pName,
+                    request->Headers.pUnknownHeaders[i].NameLength),
+                String::New(
+                    request->Headers.pUnknownHeaders[i].pRawValue,
+                    request->Headers.pUnknownHeaders[i].RawValueLength));
+        }
+
+        // TODO: process trailers
+
+        // Add HTTP version information
+
+        req->Set(v8httpVersionMajor, Integer::NewFromUnsigned(request->Version.MajorVersion));
+        req->Set(v8httpVersionMinor, Integer::NewFromUnsigned(request->Version.MinorVersion));
+
+        // Add URL information
+
+        req->Set(v8url, String::New((uint16_t*)request->pRawUrl, request->RawUrlLength));
+
+        // Invoke the JavaScript callback passing event as the only paramater
+
+        Handle<Value> argv[1] = { event };
+        Handle<Value> result = callback->Call(Context::GetCurrent()->Global(), 1, argv);
+        if (result->IsBoolean() && result->BooleanValue())
+        {
+            // If the callback response is 'true', proceed to read the request body. 
+            // Otherwise request had been paused and will be resumed asynchronously from JavaScript
+            // with a call to httpsys_resume.
+
+            if (S_OK != (hr = httpsys_initiate_read_request_body(uv_httpsys)))
+            {
+                // Initiation failed - notify JavaScript
+                httpsys_notify_error(uv_httpsys, HTTPSYS_ERROR_INITIALIZING_READ_REQUEST_BODY, hr);
+                httpsys_free(uv_httpsys);
+                uv_httpsys = NULL;
+            }            
+        }
+    }
 }
 
 HRESULT httpsys_initiate_new_request(HANDLE requestQueue)
@@ -21,7 +257,8 @@ HRESULT httpsys_initiate_new_request(HANDLE requestQueue)
 
     ErrorIf(NULL == (uv_httpsys = (uv_httpsys_t*)malloc(sizeof(uv_httpsys_t))), ERROR_NOT_ENOUGH_MEMORY);
     RtlZeroMemory(uv_httpsys, sizeof(uv_httpsys_t));
-    CheckError(uv_async_init(uv_default_loop(), &uv_httpsys->uv_async, https_callback));
+    uv_httpsys->requestQueue = requestQueue;
+    CheckError(uv_async_init(uv_default_loop(), &uv_httpsys->uv_async, httpsys_new_request_callback));
 
     // Allocate initial buffer to receice the HTTP request
 
@@ -47,6 +284,14 @@ HRESULT httpsys_initiate_new_request(HANDLE requestQueue)
 
 Error:
 
+    httpsys_free(uv_httpsys);
+    uv_httpsys = NULL;
+
+    return hr;
+}
+
+void httpsys_free(uv_httpsys_t* uv_httpsys)
+{
     if (NULL != uv_httpsys) 
     {
         if (NULL != uv_httpsys->uv_async.loop)
@@ -63,6 +308,106 @@ Error:
         free(uv_httpsys);
         uv_httpsys = NULL;
     }
+}
+
+void httpsys_read_request_body_callback(uv_async_t* handle, int status)
+{
+    HTTPSYS_CALLBACK_PREAMBLE
+    HRESULT hr;
+
+    // Process async completion
+
+    if (ERROR_HANDLE_EOF == uv_httpsys->uv_async.async_req.overlapped.Internal)
+    {
+        // End of request body - notify JavaScript
+
+        Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_END_REQUEST);
+        Handle<Value> argv[1] = { event };
+        callback->Call(Context::GetCurrent()->Global(), 1, argv);
+    }
+    else if (S_OK != uv_httpsys->uv_async.async_req.overlapped.Internal)
+    {
+        // Async completion failed - notify JavaScript
+
+        httpsys_notify_error(
+            uv_httpsys, 
+            HTTPSYS_ERROR_READ_REQUEST_BODY, 
+            uv_httpsys->uv_async.async_req.overlapped.Internal);
+        httpsys_free(uv_httpsys);
+        uv_httpsys = NULL;
+    }
+    else
+    {
+        // Successful completion - send body chunk to JavaScript as a Buffer
+
+        // Good explanation of native Buffers at 
+        // http://sambro.is-super-awesome.com/2011/03/03/creating-a-proper-buffer-in-a-node-c-addon/
+
+        Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_REQUEST_BODY);
+        ULONG length = uv_httpsys->uv_async.async_req.overlapped.InternalHigh;
+        node::Buffer* slowBuffer = node::Buffer::New(length);
+        memcpy(node::Buffer::Data(slowBuffer), uv_httpsys->buffer, length);
+        Handle<Value> args[] = { slowBuffer->handle_, Integer::New(length), Integer::New(0) };
+        Handle<Object> fastBuffer = bufferConstructor->NewInstance(3, args);
+        event->Set(v8data, fastBuffer);
+
+        Handle<Value> argv[] = { event };
+        Handle<Value> result = callback->Call(Context::GetCurrent()->Global(), 1, argv);
+
+        if (result->IsBoolean() && result->BooleanValue())
+        {
+            // If the callback response is 'true', proceed to read more of the request body. 
+            // Otherwise request had been paused and will be resumed asynchronously from JavaScript
+            // with a call to httpsys_resume.
+
+            if (S_OK != (hr = httpsys_initiate_read_request_body(uv_httpsys)))
+            {
+                // Initiation failed - notify JavaScript
+                httpsys_notify_error(uv_httpsys, HTTPSYS_ERROR_INITIALIZING_READ_REQUEST_BODY, hr);
+                httpsys_free(uv_httpsys);
+                uv_httpsys = NULL;
+            }            
+        }       
+    }
+}
+
+HRESULT httpsys_initiate_read_request_body(uv_httpsys_t* uv_httpsys)
+{
+    HandleScope handleScope;
+    HRESULT hr;
+
+    // Initialize libuv handle representing this async operation
+
+    RtlZeroMemory(&uv_httpsys->uv_async, sizeof(uv_async_t));
+    CheckError(uv_async_init(uv_default_loop(), &uv_httpsys->uv_async, httpsys_read_request_body_callback));
+
+    // Initiate async receive of the HTTP request body
+
+    hr = HttpReceiveRequestEntityBody(
+        uv_httpsys->requestQueue,
+        uv_httpsys->requestId,
+        0,  
+        uv_httpsys->buffer,
+        uv_httpsys->bufferSize,
+        NULL,
+        &uv_httpsys->uv_async.async_req.overlapped);
+
+    if (ERROR_HANDLE_EOF == hr)
+    {
+        // End of request body, decrement libuv loop ref count and generate JavaScript event
+        uv_unref(uv_httpsys->uv_async.loop);
+        Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_END_REQUEST);
+        Handle<Value> argv[1] = { event };
+        callback->Call(Context::GetCurrent()->Global(), 1, argv);
+    }
+    else 
+    {
+        ErrorIf(NO_ERROR != hr && ERROR_IO_PENDING != hr, hr);
+    }
+
+    return S_OK;
+
+Error:
 
     return hr;
 }
@@ -185,7 +530,7 @@ Handle<Value> httpsys_listen(const Arguments& args)
         &bindingInfo,
         sizeof(HTTP_BINDING_INFO)));
 
-    // Associate the request queue handle with the IO completion port 
+    // Associate the HTTP.SYS request queue handle with the IO completion port 
     // of the default libuv event loop used by node. This will cause 
     // async completions related to the HTTP.SYS request queue to execute 
     // on the node.js thread. The event loop will process these events as
@@ -226,7 +571,7 @@ Handle<Value> httpsys_listen(const Arguments& args)
     // TODO: requestQueue representation will need to be fixed on 64-bit systems.
 
     result = Object::New();
-    result->Set(String::New("requestQueue"), Integer::NewFromUnsigned((uint32_t)requestQueue));
+    result->Set(v8requestQueue, Integer::NewFromUnsigned((uint32_t)requestQueue));
     twoint = (uint32_t*)&groupId;
     result->Set(String::New("groupId0"), Integer::NewFromUnsigned(twoint[0]));
     result->Set(String::New("groupId1"), Integer::NewFromUnsigned(twoint[1]));
@@ -272,7 +617,7 @@ Handle<Value> httpsys_stop_listen(const Arguments& args)
     CheckError(HttpCloseUrlGroup(*(HTTP_URL_GROUP_ID*)&twoint));
 
     CheckError(HttpCloseRequestQueue(
-        (HANDLE)options->Get(String::New("requestQueue"))->Uint32Value()));
+        (HANDLE)options->Get(v8requestQueue)->Uint32Value()));
 
     twoint[0] = options->Get(String::New("sessionId0"))->Uint32Value();
     twoint[1] = options->Get(String::New("sessionId1"))->Uint32Value();
@@ -287,7 +632,51 @@ Error:
 
 void init(Handle<Object> target) 
 {
+    HandleScope handleScope;
+
     initialized = 0;
+
+    // Create V8 representation of HTTP verb strings to reuse across requests
+
+    for (int i = 0; i < HttpVerbMaximum; i++)
+    {
+        if (verbs[i])
+        {
+            v8verbs[i] = Persistent<String>::New(String::New(verbs[i]));
+        }
+    }
+
+    // Create V8 representation of HTTP header names to reuse across requests
+
+    for (int i = 0; i < HttpHeaderRequestMaximum; i++)
+    {
+        if (requestHeaders[i])
+        {
+            v8httpRequestHeaderNames[i] = Persistent<String>::New(String::New(requestHeaders[i]));
+        }
+    }
+
+    // Create global V8 strings to reuse across requests
+
+    v8method = Persistent<String>::New(String::NewSymbol("method"));
+    v8requestQueue = Persistent<String>::New(String::NewSymbol("requestQueue"));
+    v8req = Persistent<String>::New(String::NewSymbol("req"));
+    v8httpHeaders = Persistent<String>::New(String::NewSymbol("headers"));
+    v8httpVersionMinor = Persistent<String>::New(String::NewSymbol("httpVersionMinor"));
+    v8httpVersionMajor = Persistent<String>::New(String::NewSymbol("httpVersionMajor"));
+    v8eventType = Persistent<String>::New(String::NewSymbol("eventType"));
+    v8code = Persistent<String>::New(String::NewSymbol("code"));
+    v8url = Persistent<String>::New(String::NewSymbol("url"));
+    v8uv_httpsys = Persistent<String>::New(String::NewSymbol("uv_httpsys"));
+    v8data = Persistent<String>::New(String::NewSymbol("data"));
+
+    // Capture the constructor function of JavaScript Buffer implementation
+
+    bufferConstructor = Persistent<Function>::New(Handle<Function>::Cast(
+        Context::GetCurrent()->Global()->Get(String::New("Buffer")))); 
+
+    // Create exports
+
     NODE_SET_METHOD(target, "httpsys_init", httpsys_init);
     NODE_SET_METHOD(target, "httpsys_listen", httpsys_listen);
     NODE_SET_METHOD(target, "httpsys_stop_listen", httpsys_stop_listen);
