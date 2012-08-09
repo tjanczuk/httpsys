@@ -113,6 +113,14 @@ char* verbs[] = {
     uv_unref(uv_httpsys->uv_async.loop); \
     PHTTP_REQUEST request = (PHTTP_REQUEST)uv_httpsys->buffer; 
 
+// Processing common to most exported methods:
+// - declare handle scope and hr
+// - extract uv_httpsys_t from the 'uv_httpsys' member of the object passed as the first parameter
+#define HTTPSYS_EXPORT_PREAMBLE \
+    HandleScope handleScope; \
+    HRESULT hr; \
+    uv_httpsys_t* uv_httpsys = (uv_httpsys_t*)args[0]->ToObject()->Get(v8uv_httpsys)->Uint32Value();
+
 Handle<Object> httpsys_create_event(uv_httpsys_t* uv_httpsys, int eventType)
 {
     HandleScope handleScope;
@@ -630,6 +638,22 @@ Error:
     return handleScope.Close(ThrowException(Int32::New(hr)));
 }
 
+Handle<Value> httpsys_resume(const Arguments& args)
+{
+    HTTPSYS_EXPORT_PREAMBLE;
+
+    CheckError(httpsys_initiate_read_request_body(uv_httpsys));
+
+    return handleScope.Close(Undefined());
+
+Error:
+
+    httpsys_free(uv_httpsys);
+    uv_httpsys = NULL;
+
+    return handleScope.Close(ThrowException(Int32::New(hr)));
+}
+
 void init(Handle<Object> target) 
 {
     HandleScope handleScope;
@@ -680,6 +704,7 @@ void init(Handle<Object> target)
     NODE_SET_METHOD(target, "httpsys_init", httpsys_init);
     NODE_SET_METHOD(target, "httpsys_listen", httpsys_listen);
     NODE_SET_METHOD(target, "httpsys_stop_listen", httpsys_stop_listen);
+    NODE_SET_METHOD(target, "httpsys_resume", httpsys_resume);
 }
 
 NODE_MODULE(httpsys, init);

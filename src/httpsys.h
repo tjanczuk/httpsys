@@ -31,6 +31,8 @@ using namespace v8;
         }                         \
     }
 
+// Wrapper of the uv_async_t with HTTP.SYS specific data
+
 typedef struct uv_httpsys_s {
     uv_async_t uv_async;
     HANDLE requestQueue;
@@ -38,6 +40,8 @@ typedef struct uv_httpsys_s {
     void* buffer;
     int bufferSize;
 } uv_httpsys_t;
+
+// Types of events passed to the JavaScript callback from native
 
 typedef enum {
     HTTPSYS_ERROR_INITIALIZING_REQUEST = 1,
@@ -49,19 +53,25 @@ typedef enum {
     HTTPSYS_REQUEST_BODY
 } uv_httpsys_event_type;
 
+// Utility functions
+
 Handle<Object> httpsys_create_event(uv_httpsys_t* uv_httpsys, int eventType);
 Handle<Value> httpsys_notify_error(uv_httpsys_t* uv_httpsys, uv_httpsys_event_type errorType, int code);
 void httpsys_free(uv_httpsys_t* uv_httpsys);
 
+// HTTP processing state machine actions and events
+
 void httpsys_new_request_callback(uv_async_t* handle, int status);
 HRESULT httpsys_initiate_new_request(HANDLE requestQueue);
-
 void httpsys_read_request_body_callback(uv_async_t* handle, int status);
 HRESULT httpsys_initiate_read_request_body(uv_httpsys_t* uv_httpsys);
+
+// Exports
 
 Handle<Value> httpsys_init(const Arguments& args);
 Handle<Value> httpsys_listen(const Arguments& args);
 Handle<Value> httpsys_stop_listen(const Arguments& args);
+Handle<Value> httpsys_resume(const Arguments& args);
 
 void init(Handle<Object> target);
 
