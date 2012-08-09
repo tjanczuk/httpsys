@@ -19,6 +19,12 @@ Handle<String> v8code;
 Handle<String> v8url;
 Handle<String> v8uv_httpsys;
 Handle<String> v8data;
+Handle<String> v8statusCode;
+Handle<String> v8reason;
+Handle<String> v8knownHeaders;
+Handle<String> v8unknownHeaders;
+Handle<String> v8isLastChunk;
+Handle<String> v8chunks;
 
 // Maps HTTP_HEADER_ID enum to v8 string
 // http://msdn.microsoft.com/en-us/library/windows/desktop/aa364526(v=vs.85).aspx
@@ -654,6 +660,231 @@ Error:
     return handleScope.Close(ThrowException(Int32::New(hr)));
 }
 
+Handle<Value> httpsys_write_headers(const Arguments& args)
+{
+    HTTPSYS_EXPORT_PREAMBLE;
+    HTTP_RESPONSE response;
+    Handle<Object> options = args[0]->ToObject();
+    String::Utf8Value reason(options->Get(v8reason)); 
+    Handle<Object> unknownHeaders;
+    Handle<Array> headerNames;
+    Handle<String> headerName;
+    Handle<Array> knownHeaders;
+
+    // Initialize libuv handle representing this async operation
+
+    RtlZeroMemory(&uv_httpsys->uv_async, sizeof(uv_async_t));
+    CheckError(uv_async_init(uv_default_loop(), &uv_httpsys->uv_async, httpsys_write_headers_callback));
+
+    // Create response
+
+    RtlZeroMemory(&response, sizeof(HTTP_RESPONSE));
+
+    // Set response status code and reason
+
+    response.StatusCode = options->Get(v8statusCode)->Uint32Value();
+    response.pReason = *reason;
+    response.ReasonLength = reason.length();
+
+    // Set known headers
+
+    knownHeaders = Handle<Array>::Cast(options->Get(v8knownHeaders));
+    for (int i = 0; i < HttpHeaderResponseMaximum; i++)
+    {
+        String::Utf8Value header(knownHeaders->Get(i));
+        if (*header)
+        {
+            response.Headers.KnownHeaders[i].pRawValue = *header;
+            response.Headers.KnownHeaders[i].RawValueLength = header.length();
+        }
+    }
+
+    // Set unknown headers
+
+    unknownHeaders = options->Get(v8unknownHeaders)->ToObject();
+    headerNames = unknownHeaders->GetOwnPropertyNames();
+    if (headerNames->Length() > 0)
+    {
+        // Use the uv_httpsys->buffer allocated previously as storage for an 
+        // array of HTTP_UNKNOWN_HEADER structures. 
+
+        ErrorIf(uv_httpsys->bufferSize < (sizeof (HTTP_UNKNOWN_HEADER) * headerNames->Length()), 
+            ERROR_NOT_ENOUGH_MEMORY);
+        response.Headers.pUnknownHeaders = (PHTTP_UNKNOWN_HEADER)uv_httpsys->buffer;
+        response.Headers.UnknownHeaderCount = headerNames->Length();
+        for (int i = 0; i < response.Headers.UnknownHeaderCount; i++)
+        {
+            headerName = headerNames->Get(i)->ToString();
+            String::Utf8Value headerNameUtf8(headerName);
+            String::Utf8Value headerValueUtf8(unknownHeaders->Get(headerName));
+            response.Headers.pUnknownHeaders[i].NameLength = headerNameUtf8.length();
+            response.Headers.pUnknownHeaders[i].pName = *headerNameUtf8;
+            response.Headers.pUnknownHeaders[i].RawValueLength = headerValueUtf8.length();
+            response.Headers.pUnknownHeaders[i].pRawValue = *headerValueUtf8;
+        }
+    }
+
+    // TOOD: support response trailers
+
+    // Initiate async send of the HTTP response headers
+
+    hr = HttpSendHttpResponse(
+        uv_httpsys->requestQueue,
+        uv_httpsys->requestId,
+        HTTP_SEND_RESPONSE_FLAG_MORE_DATA,
+        &response,
+        NULL,
+        NULL,
+        NULL,
+        0,
+        &uv_httpsys->uv_async.async_req.overlapped,
+        NULL);
+
+    ErrorIf(NO_ERROR != hr && ERROR_IO_PENDING != hr, hr);
+
+    return handleScope.Close(Undefined());
+
+Error:
+
+    httpsys_free(uv_httpsys);
+    uv_httpsys = NULL;
+
+    return handleScope.Close(ThrowException(Int32::New(hr)));
+}
+
+void httpsys_write_headers_callback(uv_async_t* handle, int status)
+{
+    HTTPSYS_CALLBACK_PREAMBLE;
+
+    // Process async completion
+
+    if (S_OK != uv_httpsys->uv_async.async_req.overlapped.Internal)
+    {
+        // Async completion failed - notify JavaScript
+
+        httpsys_notify_error(
+            uv_httpsys, 
+            HTTPSYS_ERROR_WRITING_HEADERS, 
+            uv_httpsys->uv_async.async_req.overlapped.Internal);
+        httpsys_free(uv_httpsys);
+        uv_httpsys = NULL;
+    }
+    else
+    {
+        // Successful completion 
+
+        Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_HEADERS_WRITTEN);
+        Handle<Value> argv[] = { event };
+        callback->Call(Context::GetCurrent()->Global(), 1, argv);
+    }    
+}
+
+Handle<Value> httpsys_write_body(const Arguments& args)
+{
+    HTTPSYS_EXPORT_PREAMBLE;
+    Handle<Object> options = args[0]->ToObject();
+    ULONG flags;
+    PHTTP_DATA_CHUNK data = NULL;
+    Handle<Array> chunks;
+
+    // Initialize libuv handle representing this async operation
+
+    RtlZeroMemory(&uv_httpsys->uv_async, sizeof(uv_async_t));
+    CheckError(uv_async_init(uv_default_loop(), &uv_httpsys->uv_async, httpsys_write_body_callback));
+
+    // Determine tha flags
+
+    if (options->Get(v8isLastChunk)->IsBoolean() && options->Get(v8isLastChunk)->BooleanValue())
+    {
+        flags = 0;
+        uv_httpsys->lastChunkSent = 1;
+    }
+    else
+    {
+        flags = HTTP_SEND_RESPONSE_FLAG_MORE_DATA;
+    }
+
+    // Add chunks of response body if any
+
+    chunks = Handle<Array>::Cast(options->Get(v8chunks));
+    if (chunks->Length() > 0)
+    {
+        // Use the uv_httpsys->buffer allocated previously as storage for an 
+        // array of HTTP_DATA_CHUNK structures.
+
+        ErrorIf(uv_httpsys->bufferSize < (sizeof (HTTP_DATA_CHUNK) * chunks->Length()),
+            ERROR_NOT_ENOUGH_MEMORY);
+        data = (PHTTP_DATA_CHUNK)uv_httpsys->buffer;
+        for (unsigned int i = 0; i < chunks->Length(); i++)
+        {
+            Handle<Object> buffer = chunks->Get(i)->ToObject();
+            data[i].DataChunkType = HttpDataChunkFromMemory;
+            data[i].FromMemory.pBuffer = node::Buffer::Data(buffer);
+            data[i].FromMemory.BufferLength = node::Buffer::Length(buffer);
+        }
+    }
+
+    // Initiate async send of the HTTP response body
+
+    hr = HttpSendResponseEntityBody(
+        uv_httpsys->requestQueue,
+        uv_httpsys->requestId,
+        flags,
+        chunks->Length(),
+        data,
+        NULL,
+        NULL,
+        0,
+        &uv_httpsys->uv_async.async_req.overlapped,
+        NULL);
+
+    ErrorIf(NO_ERROR != hr && ERROR_IO_PENDING != hr, hr);
+
+    return handleScope.Close(Undefined());
+
+Error:
+
+    httpsys_free(uv_httpsys);
+    uv_httpsys = NULL;
+
+    return handleScope.Close(ThrowException(Int32::New(hr)));
+}
+
+void httpsys_write_body_callback(uv_async_t* handle, int status)
+{
+    HTTPSYS_CALLBACK_PREAMBLE;
+
+    // Process async completion
+
+    if (S_OK != uv_httpsys->uv_async.async_req.overlapped.Internal)
+    {
+        // Async completion failed - notify JavaScript
+
+        httpsys_notify_error(
+            uv_httpsys, 
+            HTTPSYS_ERROR_WRITING_BODY, 
+            uv_httpsys->uv_async.async_req.overlapped.Internal);
+        httpsys_free(uv_httpsys);
+        uv_httpsys = NULL;
+    }
+    else
+    {
+        // Successful completion 
+
+        Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_BODY_WRITTEN);
+
+        if (uv_httpsys->lastChunkSent)
+        {
+            // Response is completed - clean up resources
+            httpsys_free(uv_httpsys);
+            uv_httpsys = NULL;
+        }
+
+        Handle<Value> argv[] = { event };
+        callback->Call(Context::GetCurrent()->Global(), 1, argv);
+    }    
+}
+
 void init(Handle<Object> target) 
 {
     HandleScope handleScope;
@@ -693,6 +924,12 @@ void init(Handle<Object> target)
     v8url = Persistent<String>::New(String::NewSymbol("url"));
     v8uv_httpsys = Persistent<String>::New(String::NewSymbol("uv_httpsys"));
     v8data = Persistent<String>::New(String::NewSymbol("data"));
+    v8statusCode = Persistent<String>::New(String::NewSymbol("statusCode"));
+    v8reason = Persistent<String>::New(String::NewSymbol("reason"));
+    v8knownHeaders = Persistent<String>::New(String::NewSymbol("knownHeaders"));
+    v8unknownHeaders = Persistent<String>::New(String::NewSymbol("unknownHeaders"));
+    v8isLastChunk = Persistent<String>::New(String::NewSymbol("isLastChunk"));
+    v8chunks = Persistent<String>::New(String::NewSymbol("chunks"));
 
     // Capture the constructor function of JavaScript Buffer implementation
 
@@ -705,6 +942,7 @@ void init(Handle<Object> target)
     NODE_SET_METHOD(target, "httpsys_listen", httpsys_listen);
     NODE_SET_METHOD(target, "httpsys_stop_listen", httpsys_stop_listen);
     NODE_SET_METHOD(target, "httpsys_resume", httpsys_resume);
+    NODE_SET_METHOD(target, "httpsys_write_headers", httpsys_resume);
 }
 
 NODE_MODULE(httpsys, init);

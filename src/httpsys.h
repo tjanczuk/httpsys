@@ -38,7 +38,8 @@ typedef struct uv_httpsys_s {
     HANDLE requestQueue;
     HTTP_REQUEST_ID requestId;
     void* buffer;
-    int bufferSize;
+    unsigned int bufferSize;
+    int lastChunkSent;
 } uv_httpsys_t;
 
 // Types of events passed to the JavaScript callback from native
@@ -50,7 +51,11 @@ typedef enum {
     HTTPSYS_ERROR_INITIALIZING_READ_REQUEST_BODY,
     HTTPSYS_END_REQUEST,
     HTTPSYS_ERROR_READ_REQUEST_BODY,
-    HTTPSYS_REQUEST_BODY
+    HTTPSYS_REQUEST_BODY,
+    HTTPSYS_HEADERS_WRITTEN,
+    HTTPSYS_ERROR_WRITING_HEADERS,
+    HTTPSYS_BODY_WRITTEN,
+    HTTPSYS_ERROR_WRITING_BODY
 } uv_httpsys_event_type;
 
 // Utility functions
@@ -65,6 +70,8 @@ void httpsys_new_request_callback(uv_async_t* handle, int status);
 HRESULT httpsys_initiate_new_request(HANDLE requestQueue);
 void httpsys_read_request_body_callback(uv_async_t* handle, int status);
 HRESULT httpsys_initiate_read_request_body(uv_httpsys_t* uv_httpsys);
+void httpsys_write_headers_callback(uv_async_t* handle, int status);
+void httpsys_write_body_callback(uv_async_t* handle, int status);
 
 // Exports
 
@@ -72,6 +79,8 @@ Handle<Value> httpsys_init(const Arguments& args);
 Handle<Value> httpsys_listen(const Arguments& args);
 Handle<Value> httpsys_stop_listen(const Arguments& args);
 Handle<Value> httpsys_resume(const Arguments& args);
+Handle<Value> httpsys_write_headers(const Arguments& args);
+Handle<Value> httpsys_write_body(const Arguments& args);
 
 void init(Handle<Object> target);
 
