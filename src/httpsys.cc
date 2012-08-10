@@ -1,5 +1,20 @@
 #include "httpsys.h"
 
+/*
+Design notes:
+- Only one async operation per HTTP request should be outstanding at a time. JavaScript 
+  must ensure not to initiate another async operation (e.g. httpsys_write_body) before 
+  the ongoing one completes. This implies JavaScript must manage a state machine around a request
+  and buffer certain calls from user code (e.g. writing multiple chunks of response body before
+  previous write completes)
+- Native resources are released by native code if async operation completes with error.
+- If JavaScript encounters an error it must explicitly request native resources to be released.
+  In particular there is no exception contract between JavaScript callback and native code.
+- JavaScript cannot make any additional calls into native in the context of a particular request
+  after it has been called with an error event type; at that time all native resources had already 
+  been cleaned up.
+*/
+
 using namespace v8;
 
 int initialized;
@@ -117,6 +132,7 @@ char* verbs[] = {
     HandleScope handleScope; \
     uv_httpsys_t* uv_httpsys = CONTAINING_RECORD(handle, uv_httpsys_t, uv_async); \
     uv_unref(uv_httpsys->uv_async.loop); \
+    uv_httpsys->uv_async.loop = NULL; \
     PHTTP_REQUEST request = (PHTTP_REQUEST)uv_httpsys->buffer; 
 
 // Processing common to most exported methods:
@@ -304,10 +320,63 @@ Error:
     return hr;
 }
 
+void httpsys_free_chunks(uv_httpsys_t* uv_httpsys)
+{
+    if (uv_httpsys->chunks)
+    {
+        for (int i = 0; i < uv_httpsys->chunkCount; i++)
+        {
+            if (uv_httpsys->chunks[i].FromMemory.pBuffer)
+            {
+                free(uv_httpsys->chunks[i].FromMemory.pBuffer);
+            }
+        }
+
+        free(uv_httpsys->chunks);
+        uv_httpsys->chunks = NULL;
+        uv_httpsys->chunkCount = 0;
+    }
+}
+
 void httpsys_free(uv_httpsys_t* uv_httpsys)
 {
     if (NULL != uv_httpsys) 
     {
+        httpsys_free_chunks(uv_httpsys);
+
+        if (uv_httpsys->response.pReason)
+        {
+            free((void*)uv_httpsys->response.pReason);
+        }
+
+        for (int i = 0; i < HttpHeaderResponseMaximum; i++)
+        {
+            if (uv_httpsys->response.Headers.KnownHeaders[i].pRawValue)
+            {
+                free((void*)uv_httpsys->response.Headers.KnownHeaders[i].pRawValue);
+            }
+        }
+
+        if (uv_httpsys->response.Headers.pUnknownHeaders)
+        {
+            for (int i = 0; i < uv_httpsys->response.Headers.UnknownHeaderCount; i++)
+            {
+                if (uv_httpsys->response.Headers.pUnknownHeaders[i].pName)
+                {
+                    free((void*)uv_httpsys->response.Headers.pUnknownHeaders[i].pName);
+                }
+
+                if (uv_httpsys->response.Headers.pUnknownHeaders[i].pRawValue)
+                {
+                    free((void*)uv_httpsys->response.Headers.pUnknownHeaders[i].pRawValue);
+                }
+            }
+
+            free(uv_httpsys->response.Headers.pUnknownHeaders);
+        }
+
+        RtlZeroMemory(&uv_httpsys->response, sizeof (uv_httpsys->response));
+
         if (NULL != uv_httpsys->uv_async.loop)
         {
             uv_unref(uv_httpsys->uv_async.loop);
@@ -408,8 +477,11 @@ HRESULT httpsys_initiate_read_request_body(uv_httpsys_t* uv_httpsys)
 
     if (ERROR_HANDLE_EOF == hr)
     {
-        // End of request body, decrement libuv loop ref count and generate JavaScript event
+        // End of request body, decrement libuv loop ref count since no async completion will follow
+        // and generate JavaScript event
+        
         uv_unref(uv_httpsys->uv_async.loop);
+        uv_httpsys->uv_async.loop = NULL;
         Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_END_REQUEST);
         Handle<Value> argv[1] = { event };
         callback->Call(Context::GetCurrent()->Global(), 1, argv);
@@ -663,7 +735,6 @@ Error:
 Handle<Value> httpsys_write_headers(const Arguments& args)
 {
     HTTPSYS_EXPORT_PREAMBLE;
-    HTTP_RESPONSE response;
     Handle<Object> options = args[0]->ToObject();
     String::Utf8Value reason(options->Get(v8reason)); 
     Handle<Object> unknownHeaders;
@@ -676,26 +747,29 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
     RtlZeroMemory(&uv_httpsys->uv_async, sizeof(uv_async_t));
     CheckError(uv_async_init(uv_default_loop(), &uv_httpsys->uv_async, httpsys_write_headers_callback));
 
-    // Create response
-
-    RtlZeroMemory(&response, sizeof(HTTP_RESPONSE));
-
     // Set response status code and reason
 
-    response.StatusCode = options->Get(v8statusCode)->Uint32Value();
-    response.pReason = *reason;
-    response.ReasonLength = reason.length();
+    uv_httpsys->response.StatusCode = options->Get(v8statusCode)->Uint32Value();
+    ErrorIf(NULL == (uv_httpsys->response.pReason = (PCSTR)malloc(reason.length())),
+        ERROR_NOT_ENOUGH_MEMORY);
+    uv_httpsys->response.ReasonLength = reason.length();
+    memcpy((void*)uv_httpsys->response.pReason, *reason, reason.length());
 
     // Set known headers
 
     knownHeaders = Handle<Array>::Cast(options->Get(v8knownHeaders));
     for (int i = 0; i < HttpHeaderResponseMaximum; i++)
     {
-        String::Utf8Value header(knownHeaders->Get(i));
-        if (*header)
+        Handle<Value> knownHeader = knownHeaders->Get(i);
+        if (!knownHeader->IsUndefined())
         {
-            response.Headers.KnownHeaders[i].pRawValue = *header;
-            response.Headers.KnownHeaders[i].RawValueLength = header.length();
+            String::Utf8Value header(knownHeader);
+            ErrorIf(NULL == (uv_httpsys->response.Headers.KnownHeaders[i].pRawValue = 
+                (PCSTR)malloc(header.length())),
+                ERROR_NOT_ENOUGH_MEMORY);
+            uv_httpsys->response.Headers.KnownHeaders[i].RawValueLength = header.length();
+            memcpy((void*)uv_httpsys->response.Headers.KnownHeaders[i].pRawValue, 
+                *header, header.length());
         }
     }
 
@@ -705,22 +779,29 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
     headerNames = unknownHeaders->GetOwnPropertyNames();
     if (headerNames->Length() > 0)
     {
-        // Use the uv_httpsys->buffer allocated previously as storage for an 
-        // array of HTTP_UNKNOWN_HEADER structures. 
-
-        ErrorIf(uv_httpsys->bufferSize < (sizeof (HTTP_UNKNOWN_HEADER) * headerNames->Length()), 
+        ErrorIf(NULL == (uv_httpsys->response.Headers.pUnknownHeaders = 
+            (PHTTP_UNKNOWN_HEADER)malloc(headerNames->Length() * sizeof (HTTP_UNKNOWN_HEADER))),
             ERROR_NOT_ENOUGH_MEMORY);
-        response.Headers.pUnknownHeaders = (PHTTP_UNKNOWN_HEADER)uv_httpsys->buffer;
-        response.Headers.UnknownHeaderCount = headerNames->Length();
-        for (int i = 0; i < response.Headers.UnknownHeaderCount; i++)
+        RtlZeroMemory(uv_httpsys->response.Headers.pUnknownHeaders, 
+            headerNames->Length() * sizeof (HTTP_UNKNOWN_HEADER));
+        uv_httpsys->response.Headers.UnknownHeaderCount = headerNames->Length();
+        for (int i = 0; i < uv_httpsys->response.Headers.UnknownHeaderCount; i++)
         {
             headerName = headerNames->Get(i)->ToString();
             String::Utf8Value headerNameUtf8(headerName);
             String::Utf8Value headerValueUtf8(unknownHeaders->Get(headerName));
-            response.Headers.pUnknownHeaders[i].NameLength = headerNameUtf8.length();
-            response.Headers.pUnknownHeaders[i].pName = *headerNameUtf8;
-            response.Headers.pUnknownHeaders[i].RawValueLength = headerValueUtf8.length();
-            response.Headers.pUnknownHeaders[i].pRawValue = *headerValueUtf8;
+            uv_httpsys->response.Headers.pUnknownHeaders[i].NameLength = headerNameUtf8.length();
+            ErrorIf(NULL == (uv_httpsys->response.Headers.pUnknownHeaders[i].pName = 
+                (PCSTR)malloc(headerNameUtf8.length())),
+                ERROR_NOT_ENOUGH_MEMORY);
+            memcpy((void*)uv_httpsys->response.Headers.pUnknownHeaders[i].pName, 
+                *headerNameUtf8, headerNameUtf8.length());
+            uv_httpsys->response.Headers.pUnknownHeaders[i].RawValueLength = headerValueUtf8.length();
+            ErrorIf(NULL == (uv_httpsys->response.Headers.pUnknownHeaders[i].pRawValue = 
+                (PCSTR)malloc(headerValueUtf8.length())),
+                ERROR_NOT_ENOUGH_MEMORY);
+            memcpy((void*)uv_httpsys->response.Headers.pUnknownHeaders[i].pRawValue, 
+                *headerValueUtf8, headerValueUtf8.length());
         }
     }
 
@@ -732,7 +813,7 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
         uv_httpsys->requestQueue,
         uv_httpsys->requestId,
         HTTP_SEND_RESPONSE_FLAG_MORE_DATA,
-        &response,
+        &uv_httpsys->response,
         NULL,
         NULL,
         NULL,
@@ -784,7 +865,6 @@ Handle<Value> httpsys_write_body(const Arguments& args)
     HTTPSYS_EXPORT_PREAMBLE;
     Handle<Object> options = args[0]->ToObject();
     ULONG flags;
-    PHTTP_DATA_CHUNK data = NULL;
     Handle<Array> chunks;
 
     // Initialize libuv handle representing this async operation
@@ -809,18 +889,24 @@ Handle<Value> httpsys_write_body(const Arguments& args)
     chunks = Handle<Array>::Cast(options->Get(v8chunks));
     if (chunks->Length() > 0)
     {
-        // Use the uv_httpsys->buffer allocated previously as storage for an 
-        // array of HTTP_DATA_CHUNK structures.
+        httpsys_free_chunks(uv_httpsys);
 
-        ErrorIf(uv_httpsys->bufferSize < (sizeof (HTTP_DATA_CHUNK) * chunks->Length()),
+        ErrorIf(NULL == (uv_httpsys->chunks = 
+            (PHTTP_DATA_CHUNK)malloc(chunks->Length() * sizeof(HTTP_DATA_CHUNK))),
             ERROR_NOT_ENOUGH_MEMORY);
-        data = (PHTTP_DATA_CHUNK)uv_httpsys->buffer;
-        for (unsigned int i = 0; i < chunks->Length(); i++)
+        RtlZeroMemory(uv_httpsys->chunks, chunks->Length() * sizeof(HTTP_DATA_CHUNK));
+        uv_httpsys->chunkCount = chunks->Length();
+
+        for (unsigned int i = 0; i < uv_httpsys->chunkCount; i++)
         {
             Handle<Object> buffer = chunks->Get(i)->ToObject();
-            data[i].DataChunkType = HttpDataChunkFromMemory;
-            data[i].FromMemory.pBuffer = node::Buffer::Data(buffer);
-            data[i].FromMemory.BufferLength = node::Buffer::Length(buffer);
+            uv_httpsys->chunks[i].DataChunkType = HttpDataChunkFromMemory;
+            ErrorIf(NULL == (uv_httpsys->chunks[i].FromMemory.pBuffer = 
+                malloc(node::Buffer::Length(buffer))),
+                ERROR_NOT_ENOUGH_MEMORY);
+            memcpy(uv_httpsys->chunks[i].FromMemory.pBuffer, node::Buffer::Data(buffer),
+                node::Buffer::Length(buffer));
+            uv_httpsys->chunks[i].FromMemory.BufferLength = node::Buffer::Length(buffer);
         }
     }
 
@@ -830,8 +916,8 @@ Handle<Value> httpsys_write_body(const Arguments& args)
         uv_httpsys->requestQueue,
         uv_httpsys->requestId,
         flags,
-        chunks->Length(),
-        data,
+        uv_httpsys->chunkCount,
+        uv_httpsys->chunks,
         NULL,
         NULL,
         0,
@@ -942,7 +1028,8 @@ void init(Handle<Object> target)
     NODE_SET_METHOD(target, "httpsys_listen", httpsys_listen);
     NODE_SET_METHOD(target, "httpsys_stop_listen", httpsys_stop_listen);
     NODE_SET_METHOD(target, "httpsys_resume", httpsys_resume);
-    NODE_SET_METHOD(target, "httpsys_write_headers", httpsys_resume);
+    NODE_SET_METHOD(target, "httpsys_write_headers", httpsys_write_headers);
+    NODE_SET_METHOD(target, "httpsys_write_body", httpsys_write_body);
 }
 
 NODE_MODULE(httpsys, init);

@@ -37,8 +37,11 @@ typedef struct uv_httpsys_s {
     uv_async_t uv_async;
     HANDLE requestQueue;
     HTTP_REQUEST_ID requestId;
+    HTTP_RESPONSE response;
     void* buffer;
     unsigned int bufferSize;
+    PHTTP_DATA_CHUNK chunks;
+    int chunkCount;
     int lastChunkSent;
 } uv_httpsys_t;
 
@@ -62,6 +65,7 @@ typedef enum {
 
 Handle<Object> httpsys_create_event(uv_httpsys_t* uv_httpsys, int eventType);
 Handle<Value> httpsys_notify_error(uv_httpsys_t* uv_httpsys, uv_httpsys_event_type errorType, int code);
+void httpsys_free_chunks(uv_httpsys_t* uv_httpsys);
 void httpsys_free(uv_httpsys_t* uv_httpsys);
 
 // HTTP processing state machine actions and events
