@@ -143,6 +143,22 @@ char* verbs[] = {
     HRESULT hr; \
     uv_httpsys_t* uv_httpsys = (uv_httpsys_t*)args[0]->ToObject()->Get(v8uv_httpsys)->Uint32Value();
 
+Handle<Value> httpsys_make_callback(Handle<Value> options)
+{
+    HandleScope handleScope;
+    Handle<Value> argv[] = { options };
+
+    TryCatch try_catch;
+
+    Handle<Value> result = callback->Call(Context::GetCurrent()->Global(), 1, argv);
+
+    if (try_catch.HasCaught()) {
+        node::FatalException(try_catch);
+    }
+
+    return handleScope.Close(result);
+}
+
 Handle<Object> httpsys_create_event(uv_httpsys_t* uv_httpsys, int eventType)
 {
     HandleScope handleScope;
@@ -161,9 +177,8 @@ Handle<Value> httpsys_notify_error(uv_httpsys_t* uv_httpsys, uv_httpsys_event_ty
 
     Handle<Object> error = httpsys_create_event(uv_httpsys, errorType);
     error->Set(v8code, Integer::NewFromUnsigned(code));
-    Handle<Value> argv[1] = { error };
 
-    return handleScope.Close(callback->Call(Context::GetCurrent()->Global(), 1, argv));
+    return handleScope.Close(httpsys_make_callback(error));
 }
 
 void httpsys_new_request_callback(uv_async_t* handle, int status)
@@ -260,8 +275,7 @@ void httpsys_new_request_callback(uv_async_t* handle, int status)
 
         // Invoke the JavaScript callback passing event as the only paramater
 
-        Handle<Value> argv[1] = { event };
-        Handle<Value> result = callback->Call(Context::GetCurrent()->Global(), 1, argv);
+        Handle<Value> result = httpsys_make_callback(event);
         if (result->IsBoolean() && result->BooleanValue())
         {
             // If the callback response is 'true', proceed to read the request body. 
@@ -406,8 +420,7 @@ void httpsys_read_request_body_callback(uv_async_t* handle, int status)
         // End of request body - notify JavaScript
 
         Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_END_REQUEST);
-        Handle<Value> argv[1] = { event };
-        callback->Call(Context::GetCurrent()->Global(), 1, argv);
+        httpsys_make_callback(event);
     }
     else if (S_OK != uv_httpsys->uv_async.async_req.overlapped.Internal)
     {
@@ -435,8 +448,7 @@ void httpsys_read_request_body_callback(uv_async_t* handle, int status)
         Handle<Object> fastBuffer = bufferConstructor->NewInstance(3, args);
         event->Set(v8data, fastBuffer);
 
-        Handle<Value> argv[] = { event };
-        Handle<Value> result = callback->Call(Context::GetCurrent()->Global(), 1, argv);
+        Handle<Value> result = httpsys_make_callback(event);
 
         if (result->IsBoolean() && result->BooleanValue())
         {
@@ -484,8 +496,7 @@ HRESULT httpsys_initiate_read_request_body(uv_httpsys_t* uv_httpsys)
         uv_unref(uv_httpsys->uv_async.loop);
         uv_httpsys->uv_async.loop = NULL;
         Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_END_REQUEST);
-        Handle<Value> argv[1] = { event };
-        callback->Call(Context::GetCurrent()->Global(), 1, argv);
+        httpsys_make_callback(event);
     }
     else 
     {
@@ -856,8 +867,7 @@ void httpsys_write_headers_callback(uv_async_t* handle, int status)
         // Successful completion 
 
         Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_HEADERS_WRITTEN);
-        Handle<Value> argv[] = { event };
-        callback->Call(Context::GetCurrent()->Global(), 1, argv);
+        httpsys_make_callback(event);
     }    
 }
 
@@ -967,8 +977,7 @@ void httpsys_write_body_callback(uv_async_t* handle, int status)
             uv_httpsys = NULL;
         }
 
-        Handle<Value> argv[] = { event };
-        callback->Call(Context::GetCurrent()->Global(), 1, argv);
+        httpsys_make_callback(event);
     }    
 }
 

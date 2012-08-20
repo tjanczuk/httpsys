@@ -67,6 +67,7 @@ Handle<Object> httpsys_create_event(uv_httpsys_t* uv_httpsys, int eventType);
 Handle<Value> httpsys_notify_error(uv_httpsys_t* uv_httpsys, uv_httpsys_event_type errorType, int code);
 void httpsys_free_chunks(uv_httpsys_t* uv_httpsys);
 void httpsys_free(uv_httpsys_t* uv_httpsys);
+Handle<Value> httpsys_make_callback(Handle<Value> options);
 
 // HTTP processing state machine actions and events
 
