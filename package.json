@@ -9,7 +9,7 @@
   "description": "Native HTTP stack for node.js on Windows",
   "tags" : ["http", "https", "http.sys", "windows"],
   "main": "./lib/httpsys.js",
-  "engines": { "node": "0.6.x" },
+  "engines": { "node": "0.8.x" },
   "licenses": [ { "type": "Apache", "url": "http://www.apache.org/licenses/LICENSE-2.0" } ],
   "dependencies": {
   },

@@ -120,7 +120,7 @@ char* verbs[] = {
 #define HTTPSYS_CALLBACK_PREAMBLE \
     HandleScope handleScope; \
     uv_httpsys_t* uv_httpsys = CONTAINING_RECORD(handle, uv_httpsys_t, uv_async); \
-    uv_unref(uv_httpsys->uv_async.loop); \
+    uv_unref((uv_handle_t*)&uv_httpsys->uv_async); \
     uv_httpsys->uv_async.loop = NULL; \
     PHTTP_REQUEST request = (PHTTP_REQUEST)uv_httpsys->buffer; 
 
@@ -383,7 +383,7 @@ void httpsys_free(uv_httpsys_t* uv_httpsys)
 
         if (NULL != uv_httpsys->uv_async.loop)
         {
-            uv_unref(uv_httpsys->uv_async.loop);
+            uv_unref((uv_handle_t*)&uv_httpsys->uv_async);
         }
 
         if (NULL != uv_httpsys->buffer)
@@ -482,7 +482,7 @@ HRESULT httpsys_initiate_read_request_body(uv_httpsys_t* uv_httpsys)
         // End of request body, decrement libuv loop ref count since no async completion will follow
         // and generate JavaScript event
         
-        uv_unref(uv_httpsys->uv_async.loop);
+        uv_unref((uv_handle_t*)&uv_httpsys->uv_async);
         uv_httpsys->uv_async.loop = NULL;
         Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_END_REQUEST);
         httpsys_make_callback(event);
