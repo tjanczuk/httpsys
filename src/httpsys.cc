@@ -260,7 +260,7 @@ void httpsys_new_request_callback(uv_async_t* handle, int status)
 
         // Add URL information
 
-        req->Set(v8url, String::New((uint16_t*)request->pRawUrl, request->RawUrlLength));
+        req->Set(v8url, String::New(request->pRawUrl, request->RawUrlLength));
 
         // Invoke the JavaScript callback passing event as the only paramater
 
