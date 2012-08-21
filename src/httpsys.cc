@@ -86,17 +86,6 @@ char* requestHeaders[] = {
     "te",
     "translate",
     "user-agent"
-    // NULL, // HttpHeaderRequestMaximum
-    // "Accept-Ranges",
-    // "Age",
-    // "ETag",
-    // "Location",
-    // "Proxy-Authenticate",
-    // "Retry-After",
-    // "Server",
-    // "Set-Cookie",
-    // "Vary",
-    // "WWW-Authenticate"
 };
 
 // Maps HTTP_VERB enum to V8 string
