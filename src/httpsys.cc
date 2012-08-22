@@ -267,13 +267,21 @@ void httpsys_new_request_callback(uv_async_t* handle, int status)
         Handle<Value> result = httpsys_make_callback(event);
         if (result->IsBoolean() && result->BooleanValue())
         {
-            // If the callback response is 'true', proceed to read the request body. 
+            // If the callback response is 'true', proceed to process the request body. 
             // Otherwise request had been paused and will be resumed asynchronously from JavaScript
             // with a call to httpsys_resume.
 
-            if (S_OK != (hr = httpsys_initiate_read_request_body(uv_httpsys)))
+            if (0 == (request->Flags & HTTP_REQUEST_FLAG_MORE_ENTITY_BODY_EXISTS))
+            {
+                // This is a body-less request. Notify JavaScript the request is finished.
+
+                Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_END_REQUEST);
+                httpsys_make_callback(event);
+            }
+            else if (S_OK != (hr = httpsys_initiate_read_request_body(uv_httpsys)))
             {
                 // Initiation failed - notify JavaScript
+                
                 httpsys_notify_error(uv_httpsys, HTTPSYS_ERROR_INITIALIZING_READ_REQUEST_BODY, hr);
                 httpsys_free(uv_httpsys);
                 uv_httpsys = NULL;
@@ -306,7 +314,7 @@ HRESULT httpsys_initiate_new_request(HANDLE requestQueue)
     hr = HttpReceiveHttpRequest(
         requestQueue,
         HTTP_NULL_ID,
-        0,  // TODO: optimize by reading entity body on first async request
+        0,
         (PHTTP_REQUEST)uv_httpsys->buffer,
         uv_httpsys->bufferSize,
         NULL,
