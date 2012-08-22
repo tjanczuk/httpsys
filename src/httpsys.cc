@@ -326,19 +326,10 @@ Error:
 
 void httpsys_free_chunks(uv_httpsys_t* uv_httpsys)
 {
-    if (uv_httpsys->chunks)
+    if (uv_httpsys->chunk.FromMemory.pBuffer) 
     {
-        for (int i = 0; i < uv_httpsys->chunkCount; i++)
-        {
-            if (uv_httpsys->chunks[i].FromMemory.pBuffer)
-            {
-                free(uv_httpsys->chunks[i].FromMemory.pBuffer);
-            }
-        }
-
-        free(uv_httpsys->chunks);
-        uv_httpsys->chunks = NULL;
-        uv_httpsys->chunkCount = 0;
+        free(uv_httpsys->chunk.FromMemory.pBuffer);
+        RtlZeroMemory(&uv_httpsys->chunk, sizeof(uv_httpsys->chunk));
     }
 }
 
@@ -742,11 +733,12 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
     Handle<Array> headerNames;
     Handle<String> headerName;
     Handle<Array> knownHeaders;
+    ULONG flags;
 
     // Initialize libuv handle representing this async operation
 
     RtlZeroMemory(&uv_httpsys->uv_async, sizeof(uv_async_t));
-    CheckError(uv_async_init(uv_default_loop(), &uv_httpsys->uv_async, httpsys_write_headers_callback));
+    CheckError(uv_async_init(uv_default_loop(), &uv_httpsys->uv_async, httpsys_write_callback));
 
     // Set response status code and reason
 
@@ -806,14 +798,23 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
         }
     }
 
+    // Prepare response body and determine flags
+
+    CheckError(httpsys_initialize_body_chunks(options, uv_httpsys, &flags));
+    if (uv_httpsys->chunk.FromMemory.pBuffer) 
+    {
+        uv_httpsys->response.EntityChunkCount = 1;
+        uv_httpsys->response.pEntityChunks = &uv_httpsys->chunk;
+    }
+
     // TOOD: support response trailers
 
-    // Initiate async send of the HTTP response headers
+    // Initiate async send of the HTTP response headers and optional body
 
     hr = HttpSendHttpResponse(
         uv_httpsys->requestQueue,
         uv_httpsys->requestId,
-        HTTP_SEND_RESPONSE_FLAG_MORE_DATA,
+        flags,
         &uv_httpsys->response,
         NULL,
         NULL,
@@ -834,7 +835,7 @@ Error:
     return handleScope.Close(ThrowException(Int32::New(hr)));
 }
 
-void httpsys_write_headers_callback(uv_async_t* handle, int status)
+void httpsys_write_callback(uv_async_t* handle, int status)
 {
     HTTPSYS_CALLBACK_PREAMBLE;
 
@@ -846,7 +847,7 @@ void httpsys_write_headers_callback(uv_async_t* handle, int status)
 
         httpsys_notify_error(
             uv_httpsys, 
-            HTTPSYS_ERROR_WRITING_HEADERS, 
+            HTTPSYS_ERROR_WRITING, 
             uv_httpsys->uv_async.async_req.overlapped.Internal);
         httpsys_free(uv_httpsys);
         uv_httpsys = NULL;
@@ -855,9 +856,75 @@ void httpsys_write_headers_callback(uv_async_t* handle, int status)
     {
         // Successful completion 
 
-        Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_HEADERS_WRITTEN);
+        Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_WRITTEN);
+
+        if (uv_httpsys->lastChunkSent)
+        {
+            // Response is completed - clean up resources
+            httpsys_free(uv_httpsys);
+            uv_httpsys = NULL;
+        }
+
         httpsys_make_callback(event);
     }    
+}
+
+HRESULT httpsys_initialize_body_chunks(Handle<Object> options, uv_httpsys_t* uv_httpsys, ULONG* flags)
+{
+    HRESULT hr;
+    HandleScope handleScope;
+    Handle<Array> chunks;
+
+    httpsys_free_chunks(uv_httpsys);
+
+    // Copy JavaScript buffers representing response body chunks into a single
+    // continuous memory block in an HTTP_DATA_CHUNK. 
+
+    chunks = Handle<Array>::Cast(options->Get(v8chunks));
+    if (chunks->Length() > 0)
+    {
+        for (unsigned int i = 0; i < chunks->Length(); i++) {
+            Handle<Object> buffer = chunks->Get(i)->ToObject();
+            uv_httpsys->chunk.FromMemory.BufferLength += node::Buffer::Length(buffer);
+        }
+
+        ErrorIf(NULL == (uv_httpsys->chunk.FromMemory.pBuffer = 
+            malloc(uv_httpsys->chunk.FromMemory.BufferLength)),
+            ERROR_NOT_ENOUGH_MEMORY);
+
+        char* position = (char*)uv_httpsys->chunk.FromMemory.pBuffer;
+        for (unsigned int i = 0; i < chunks->Length(); i++)
+        {
+            Handle<Object> buffer = chunks->Get(i)->ToObject();
+            memcpy(position, node::Buffer::Data(buffer), node::Buffer::Length(buffer));
+            position += node::Buffer::Length(buffer);
+        }
+    }
+
+    // Remove the 'chunks' propert from the options object to indicate they have been 
+    // consumed.
+
+    ErrorIf(!options->Delete(v8chunks), E_FAIL);
+
+    // Determine whether the last of the response body is to be written out.
+
+    if (options->Get(v8isLastChunk)->IsBoolean() && options->Get(v8isLastChunk)->BooleanValue())
+    {
+        *flags = 0;
+        uv_httpsys->lastChunkSent = 1;
+    }
+    else
+    {
+        *flags = HTTP_SEND_RESPONSE_FLAG_MORE_DATA;
+    }
+
+    return S_OK;
+
+Error:
+
+    httpsys_free_chunks(uv_httpsys);
+
+    return hr;
 }
 
 Handle<Value> httpsys_write_body(const Arguments& args)
@@ -865,50 +932,15 @@ Handle<Value> httpsys_write_body(const Arguments& args)
     HTTPSYS_EXPORT_PREAMBLE;
     Handle<Object> options = args[0]->ToObject();
     ULONG flags;
-    Handle<Array> chunks;
 
     // Initialize libuv handle representing this async operation
 
     RtlZeroMemory(&uv_httpsys->uv_async, sizeof(uv_async_t));
-    CheckError(uv_async_init(uv_default_loop(), &uv_httpsys->uv_async, httpsys_write_body_callback));
+    CheckError(uv_async_init(uv_default_loop(), &uv_httpsys->uv_async, httpsys_write_callback));
 
-    // Determine tha flags
+    // Prepare response body and determine flags
 
-    if (options->Get(v8isLastChunk)->IsBoolean() && options->Get(v8isLastChunk)->BooleanValue())
-    {
-        flags = 0;
-        uv_httpsys->lastChunkSent = 1;
-    }
-    else
-    {
-        flags = HTTP_SEND_RESPONSE_FLAG_MORE_DATA;
-    }
-
-    // Add chunks of response body if any
-
-    chunks = Handle<Array>::Cast(options->Get(v8chunks));
-    if (chunks->Length() > 0)
-    {
-        httpsys_free_chunks(uv_httpsys);
-
-        ErrorIf(NULL == (uv_httpsys->chunks = 
-            (PHTTP_DATA_CHUNK)malloc(chunks->Length() * sizeof(HTTP_DATA_CHUNK))),
-            ERROR_NOT_ENOUGH_MEMORY);
-        RtlZeroMemory(uv_httpsys->chunks, chunks->Length() * sizeof(HTTP_DATA_CHUNK));
-        uv_httpsys->chunkCount = chunks->Length();
-
-        for (unsigned int i = 0; i < uv_httpsys->chunkCount; i++)
-        {
-            Handle<Object> buffer = chunks->Get(i)->ToObject();
-            uv_httpsys->chunks[i].DataChunkType = HttpDataChunkFromMemory;
-            ErrorIf(NULL == (uv_httpsys->chunks[i].FromMemory.pBuffer = 
-                malloc(node::Buffer::Length(buffer))),
-                ERROR_NOT_ENOUGH_MEMORY);
-            memcpy(uv_httpsys->chunks[i].FromMemory.pBuffer, node::Buffer::Data(buffer),
-                node::Buffer::Length(buffer));
-            uv_httpsys->chunks[i].FromMemory.BufferLength = node::Buffer::Length(buffer);
-        }
-    }
+    CheckError(httpsys_initialize_body_chunks(options, uv_httpsys, &flags));
 
     // Initiate async send of the HTTP response body
 
@@ -916,8 +948,8 @@ Handle<Value> httpsys_write_body(const Arguments& args)
         uv_httpsys->requestQueue,
         uv_httpsys->requestId,
         flags,
-        uv_httpsys->chunkCount,
-        uv_httpsys->chunks,
+        uv_httpsys->chunk.FromMemory.pBuffer ? 1 : 0,
+        uv_httpsys->chunk.FromMemory.pBuffer ? &uv_httpsys->chunk : NULL,
         NULL,
         NULL,
         0,
@@ -934,40 +966,6 @@ Error:
     uv_httpsys = NULL;
 
     return handleScope.Close(ThrowException(Int32::New(hr)));
-}
-
-void httpsys_write_body_callback(uv_async_t* handle, int status)
-{
-    HTTPSYS_CALLBACK_PREAMBLE;
-
-    // Process async completion
-
-    if (S_OK != uv_httpsys->uv_async.async_req.overlapped.Internal)
-    {
-        // Async completion failed - notify JavaScript
-
-        httpsys_notify_error(
-            uv_httpsys, 
-            HTTPSYS_ERROR_WRITING_BODY, 
-            uv_httpsys->uv_async.async_req.overlapped.Internal);
-        httpsys_free(uv_httpsys);
-        uv_httpsys = NULL;
-    }
-    else
-    {
-        // Successful completion 
-
-        Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_BODY_WRITTEN);
-
-        if (uv_httpsys->lastChunkSent)
-        {
-            // Response is completed - clean up resources
-            httpsys_free(uv_httpsys);
-            uv_httpsys = NULL;
-        }
-
-        httpsys_make_callback(event);
-    }    
 }
 
 void init(Handle<Object> target) 

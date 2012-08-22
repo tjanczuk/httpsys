@@ -40,8 +40,7 @@ typedef struct uv_httpsys_s {
     HTTP_RESPONSE response;
     void* buffer;
     unsigned int bufferSize;
-    PHTTP_DATA_CHUNK chunks;
-    int chunkCount;
+    HTTP_DATA_CHUNK chunk;
     int lastChunkSent;
 } uv_httpsys_t;
 
@@ -55,10 +54,8 @@ typedef enum {
     HTTPSYS_END_REQUEST,
     HTTPSYS_ERROR_READ_REQUEST_BODY,
     HTTPSYS_REQUEST_BODY,
-    HTTPSYS_HEADERS_WRITTEN,
-    HTTPSYS_ERROR_WRITING_HEADERS,
-    HTTPSYS_BODY_WRITTEN,
-    HTTPSYS_ERROR_WRITING_BODY
+    HTTPSYS_WRITTEN,
+    HTTPSYS_ERROR_WRITING
 } uv_httpsys_event_type;
 
 // Utility functions
@@ -68,6 +65,7 @@ Handle<Value> httpsys_notify_error(uv_httpsys_t* uv_httpsys, uv_httpsys_event_ty
 void httpsys_free_chunks(uv_httpsys_t* uv_httpsys);
 void httpsys_free(uv_httpsys_t* uv_httpsys);
 Handle<Value> httpsys_make_callback(Handle<Value> options);
+HRESULT httpsys_initialize_body_chunks(Handle<Object> options, uv_httpsys_t* uv_httpsys, ULONG* flags);
 
 // HTTP processing state machine actions and events
 
@@ -75,8 +73,7 @@ void httpsys_new_request_callback(uv_async_t* handle, int status);
 HRESULT httpsys_initiate_new_request(HANDLE requestQueue);
 void httpsys_read_request_body_callback(uv_async_t* handle, int status);
 HRESULT httpsys_initiate_read_request_body(uv_httpsys_t* uv_httpsys);
-void httpsys_write_headers_callback(uv_async_t* handle, int status);
-void httpsys_write_body_callback(uv_async_t* handle, int status);
+void httpsys_write_callback(uv_async_t* handle, int status);
 
 // Exports
 
