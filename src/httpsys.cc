@@ -40,6 +40,8 @@ Handle<String> v8knownHeaders;
 Handle<String> v8unknownHeaders;
 Handle<String> v8isLastChunk;
 Handle<String> v8chunks;
+Handle<String> v8id;
+Handle<String> v8value;
 
 // Maps HTTP_HEADER_ID enum to v8 string
 // http://msdn.microsoft.com/en-us/library/windows/desktop/aa364526(v=vs.85).aspx
@@ -823,6 +825,7 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
     Handle<Array> headerNames;
     Handle<String> headerName;
     Handle<Array> knownHeaders;
+    Handle<Object> knownHeader;
     ULONG flags;
 
     // Initialize libuv handle representing this async operation
@@ -841,24 +844,22 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
     // Set known headers
 
     knownHeaders = Handle<Array>::Cast(options->Get(v8knownHeaders));
-    for (int i = 0; i < HttpHeaderResponseMaximum; i++)
+    for (unsigned int i = 0; i < knownHeaders->Length(); i++)
     {
-        Handle<Value> knownHeader = knownHeaders->Get(i);
-        if (!knownHeader->IsUndefined())
-        {
-            String::Utf8Value header(knownHeader);
-            ErrorIf(NULL == (uv_httpsys->response.Headers.KnownHeaders[i].pRawValue = 
-                (PCSTR)malloc(header.length())),
-                ERROR_NOT_ENOUGH_MEMORY);
-            uv_httpsys->response.Headers.KnownHeaders[i].RawValueLength = header.length();
-            memcpy((void*)uv_httpsys->response.Headers.KnownHeaders[i].pRawValue, 
-                *header, header.length());
-        }
+        knownHeader = Handle<Object>::Cast(knownHeaders->Get(i));
+        int headerIndex = knownHeader->Get(v8id)->Int32Value();
+        String::Utf8Value header(knownHeader->Get(v8value));
+        ErrorIf(NULL == (uv_httpsys->response.Headers.KnownHeaders[headerIndex].pRawValue = 
+            (PCSTR)malloc(header.length())),
+            ERROR_NOT_ENOUGH_MEMORY);
+        uv_httpsys->response.Headers.KnownHeaders[headerIndex].RawValueLength = header.length();
+        memcpy((void*)uv_httpsys->response.Headers.KnownHeaders[headerIndex].pRawValue, 
+            *header, header.length());
     }
 
     // Set unknown headers
 
-    unknownHeaders = options->Get(v8unknownHeaders)->ToObject();
+    unknownHeaders = Handle<Object>::Cast(options->Get(v8unknownHeaders));
     headerNames = unknownHeaders->GetOwnPropertyNames();
     if (headerNames->Length() > 0)
     {
@@ -1008,7 +1009,7 @@ HRESULT httpsys_initialize_body_chunks(Handle<Object> options, uv_httpsys_t* uv_
     // Remove the 'chunks' propert from the options object to indicate they have been 
     // consumed.
 
-    ErrorIf(!options->Delete(v8chunks), E_FAIL);
+    ErrorIf(!options->Set(v8chunks, Undefined()), E_FAIL);
 
     // Determine whether the last of the response body is to be written out.
 
@@ -1127,6 +1128,8 @@ void init(Handle<Object> target)
     v8unknownHeaders = Persistent<String>::New(String::NewSymbol("unknownHeaders"));
     v8isLastChunk = Persistent<String>::New(String::NewSymbol("isLastChunk"));
     v8chunks = Persistent<String>::New(String::NewSymbol("chunks"));
+    v8id = Persistent<String>::New(String::NewSymbol("id"));
+    v8value = Persistent<String>::New(String::NewSymbol("value"));
 
     // Capture the constructor function of JavaScript Buffer implementation
 
