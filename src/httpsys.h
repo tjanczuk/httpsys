@@ -39,6 +39,7 @@ typedef struct uv_httpsys_server_s {
     HTTP_URL_GROUP_ID groupId;
     HANDLE requestQueue;
     unsigned int readsToInitialize;
+    Persistent<Object> event;
 } uv_httpsys_server_t;
 
 // Wrapper of the uv_async_t with HTTP.SYS specific data
@@ -52,6 +53,7 @@ typedef struct uv_httpsys_s {
     HTTP_DATA_CHUNK chunk;
     int lastChunkSent;
     uv_httpsys_server_t* uv_httpsys_server;
+    Persistent<Object> event;
 } uv_httpsys_t;
 
 // Types of events passed to the JavaScript callback from native

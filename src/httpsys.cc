@@ -153,22 +153,32 @@ Handle<Value> httpsys_make_callback(Handle<Value> options)
 Handle<Object> httpsys_create_event(uv_httpsys_server_t* uv_httpsys_server, int eventType)
 {
     HandleScope handleScope;
-    Handle<Object> event = Object::New(); 
-    event->Set(v8eventType, Integer::NewFromUnsigned(eventType));
-    event->Set(v8uv_httpsys_server, Integer::NewFromUnsigned((uint32_t)uv_httpsys_server)); 
 
-    return handleScope.Close(event);
+    if (uv_httpsys_server->event.IsEmpty())
+    {
+        uv_httpsys_server->event = Persistent<Object>::New(Object::New());    
+        uv_httpsys_server->event->Set(v8uv_httpsys_server, Integer::NewFromUnsigned((uint32_t)uv_httpsys_server)); 
+    }
+
+    uv_httpsys_server->event->Set(v8eventType, Integer::NewFromUnsigned(eventType));
+
+    return uv_httpsys_server->event;
 }
 
 Handle<Object> httpsys_create_event(uv_httpsys_t* uv_httpsys, int eventType)
 {
     HandleScope handleScope;
-    Handle<Object> event = Object::New(); 
-    event->Set(v8eventType, Integer::NewFromUnsigned(eventType));
-    event->Set(v8uv_httpsys, Integer::NewFromUnsigned((uint32_t)uv_httpsys)); 
-    event->Set(v8uv_httpsys_server, Integer::NewFromUnsigned((uint32_t)uv_httpsys->uv_httpsys_server)); 
 
-    return handleScope.Close(event);
+    if (uv_httpsys->event.IsEmpty())
+    {
+        uv_httpsys->event = Persistent<Object>::New(Object::New());
+        uv_httpsys->event->Set(v8uv_httpsys, Integer::NewFromUnsigned((uint32_t)uv_httpsys)); 
+        uv_httpsys->event->Set(v8uv_httpsys_server, Integer::NewFromUnsigned((uint32_t)uv_httpsys->uv_httpsys_server)); 
+    }
+
+    uv_httpsys->event->Set(v8eventType, Integer::NewFromUnsigned(eventType));
+
+    return uv_httpsys->event;
 }
 
 Handle<Value> httpsys_notify_error(uv_httpsys_server_t* uv_httpsys_server, uv_httpsys_event_type errorType, int code)
@@ -364,6 +374,12 @@ void httpsys_free(uv_httpsys_t* uv_httpsys)
     if (NULL != uv_httpsys) 
     {
         httpsys_free_chunks(uv_httpsys);
+
+        if (!uv_httpsys->event.IsEmpty())
+        {
+            uv_httpsys->event.Dispose();
+            uv_httpsys->event.Clear();
+        }
 
         if (uv_httpsys->response.pReason)
         {
@@ -794,6 +810,9 @@ Handle<Value> httpsys_stop_listen(const Arguments& args)
     CheckError(HttpCloseServerSession(uv_httpsys_server->sessionId));
     uv_prepare_stop(&uv_httpsys_server->uv_prepare);
 
+    // TODO: deallocate uv_httpsys_server and release uv_httpsys_server->event 
+    // after graceful close of active requests
+
     return handleScope.Close(Undefined());
 
 Error:
@@ -1013,7 +1032,7 @@ HRESULT httpsys_initialize_body_chunks(Handle<Object> options, uv_httpsys_t* uv_
 
     // Determine whether the last of the response body is to be written out.
 
-    if (options->Get(v8isLastChunk)->IsBoolean() && options->Get(v8isLastChunk)->BooleanValue())
+    if (options->Get(v8isLastChunk)->BooleanValue())
     {
         *flags = 0;
         uv_httpsys->lastChunkSent = 1;
