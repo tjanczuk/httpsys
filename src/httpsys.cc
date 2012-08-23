@@ -19,6 +19,8 @@ using namespace v8;
 
 int initialized;
 int initialBufferSize;
+ULONG requestQueueLength;
+int pendingReadCount;
 Persistent<Function> callback;
 Persistent<Function> bufferConstructor;
 
@@ -582,6 +584,8 @@ Handle<Value> httpsys_init(const Arguments& args)
     callback = Persistent<Function>::New(
         Handle<Function>::Cast(options->Get(String::New("callback"))));
     initialBufferSize = options->Get(String::New("initialBufferSize"))->Int32Value();
+    requestQueueLength = options->Get(String::New("requestQueueLength"))->Int32Value();
+    pendingReadCount = options->Get(String::New("pendingReadCount"))->Int32Value();
 
     return handleScope.Close(Undefined());
 }
@@ -712,6 +716,16 @@ Handle<Value> httpsys_listen(const Arguments& args)
         CheckError(hr);
     }
 
+    // Set the request queue length
+
+    CheckError(HttpSetRequestQueueProperty(
+        uv_httpsys_server->requestQueue,
+        HttpServerQueueLengthProperty,
+        &requestQueueLength,
+        sizeof(requestQueueLength),
+        0,
+        NULL));
+
     // Configure the request queue to prevent queuing a completion to the libuv
     // IO completion port when an async operation completes synchronously. 
 
@@ -759,7 +773,7 @@ Handle<Value> httpsys_listen(const Arguments& args)
 
     uv_prepare_init(loop, &uv_httpsys_server->uv_prepare);
     uv_prepare_start(&uv_httpsys_server->uv_prepare, httpsys_prepare_new_requests);
-    uv_httpsys_server->readsToInitialize = options->Get(String::New("pendingReadCount"))->Uint32Value();
+    uv_httpsys_server->readsToInitialize = pendingReadCount;
 
     // TODO: uv_httpsys_server representation will need to be fixed on 64-bit systems.
 
