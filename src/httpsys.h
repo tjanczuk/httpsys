@@ -31,17 +31,27 @@ using namespace v8;
         }                         \
     }
 
+// Wrapper of the uv_prepare_t associated with an active server
+
+typedef struct uv_httpsys_server_s {
+    uv_prepare_t uv_prepare;
+    HTTP_SERVER_SESSION_ID sessionId;
+    HTTP_URL_GROUP_ID groupId;
+    HANDLE requestQueue;
+    unsigned int readsToInitialize;
+} uv_httpsys_server_t;
+
 // Wrapper of the uv_async_t with HTTP.SYS specific data
 
 typedef struct uv_httpsys_s {
     uv_async_t uv_async;
-    HANDLE requestQueue;
     HTTP_REQUEST_ID requestId;
     HTTP_RESPONSE response;
     void* buffer;
     unsigned int bufferSize;
     HTTP_DATA_CHUNK chunk;
     int lastChunkSent;
+    uv_httpsys_server_t* uv_httpsys_server;
 } uv_httpsys_t;
 
 // Types of events passed to the JavaScript callback from native
@@ -61,7 +71,9 @@ typedef enum {
 // Utility functions
 
 Handle<Object> httpsys_create_event(uv_httpsys_t* uv_httpsys, int eventType);
+Handle<Object> httpsys_create_event(uv_httpsys_server_t* uv_httpsys_server, int eventType);
 Handle<Value> httpsys_notify_error(uv_httpsys_t* uv_httpsys, uv_httpsys_event_type errorType, int code);
+Handle<Value> httpsys_notify_error(uv_httpsys_server_t* uv_httpsys_server, uv_httpsys_event_type errorType, int code);
 void httpsys_free_chunks(uv_httpsys_t* uv_httpsys);
 void httpsys_free(uv_httpsys_t* uv_httpsys);
 Handle<Value> httpsys_make_callback(Handle<Value> options);
@@ -70,7 +82,8 @@ HRESULT httpsys_initialize_body_chunks(Handle<Object> options, uv_httpsys_t* uv_
 // HTTP processing state machine actions and events
 
 void httpsys_new_request_callback(uv_async_t* handle, int status);
-HRESULT httpsys_initiate_new_request(HANDLE requestQueue);
+void httpsys_prepare_new_requests(uv_prepare_t* handle, int status);
+HRESULT httpsys_initiate_new_request(uv_httpsys_t* uv_httpsys);
 void httpsys_read_request_body_callback(uv_async_t* handle, int status);
 HRESULT httpsys_initiate_read_request_body(uv_httpsys_t* uv_httpsys);
 void httpsys_write_callback(uv_async_t* handle, int status);

@@ -23,7 +23,7 @@ Persistent<Function> callback;
 Persistent<Function> bufferConstructor;
 
 // Global V8 strings reused across requests
-Handle<String> v8requestQueue;
+Handle<String> v8uv_httpsys_server;
 Handle<String> v8method;
 Handle<String> v8req;
 Handle<String> v8httpHeaders;
@@ -132,6 +132,19 @@ char* verbs[] = {
     HRESULT hr; \
     uv_httpsys_t* uv_httpsys = (uv_httpsys_t*)args[0]->ToObject()->Get(v8uv_httpsys)->Uint32Value();
 
+void uv_insert_pending_req(uv_loop_t* loop, uv_req_t* req) 
+{
+  req->next_req = NULL;
+  if (loop->pending_reqs_tail) {
+    req->next_req = loop->pending_reqs_tail->next_req;
+    loop->pending_reqs_tail->next_req = req;
+    loop->pending_reqs_tail = req;
+  } else {
+    req->next_req = req;
+    loop->pending_reqs_tail = req;
+  }
+}
+
 Handle<Value> httpsys_make_callback(Handle<Value> options)
 {
     HandleScope handleScope;
@@ -148,16 +161,35 @@ Handle<Value> httpsys_make_callback(Handle<Value> options)
     return handleScope.Close(result);
 }
 
+Handle<Object> httpsys_create_event(uv_httpsys_server_t* uv_httpsys_server, int eventType)
+{
+    HandleScope handleScope;
+    Handle<Object> event = Object::New(); 
+    event->Set(v8eventType, Integer::NewFromUnsigned(eventType));
+    event->Set(v8uv_httpsys_server, Integer::NewFromUnsigned((uint32_t)uv_httpsys_server)); 
+
+    return handleScope.Close(event);
+}
+
 Handle<Object> httpsys_create_event(uv_httpsys_t* uv_httpsys, int eventType)
 {
     HandleScope handleScope;
-    PHTTP_REQUEST request = (PHTTP_REQUEST)uv_httpsys->buffer; 
     Handle<Object> event = Object::New(); 
     event->Set(v8eventType, Integer::NewFromUnsigned(eventType));
     event->Set(v8uv_httpsys, Integer::NewFromUnsigned((uint32_t)uv_httpsys)); 
-    event->Set(v8requestQueue, Integer::NewFromUnsigned((uint32_t)uv_httpsys->requestQueue)); 
+    event->Set(v8uv_httpsys_server, Integer::NewFromUnsigned((uint32_t)uv_httpsys->uv_httpsys_server)); 
 
     return handleScope.Close(event);
+}
+
+Handle<Value> httpsys_notify_error(uv_httpsys_server_t* uv_httpsys_server, uv_httpsys_event_type errorType, int code)
+{
+    HandleScope handleScope;
+
+    Handle<Object> error = httpsys_create_event(uv_httpsys_server, errorType);
+    error->Set(v8code, Integer::NewFromUnsigned(code));
+
+    return handleScope.Close(httpsys_make_callback(error));
 }
 
 Handle<Value> httpsys_notify_error(uv_httpsys_t* uv_httpsys, uv_httpsys_event_type errorType, int code)
@@ -180,13 +212,11 @@ void httpsys_new_request_callback(uv_async_t* handle, int status)
 
     uv_httpsys->requestId = request->RequestId;
 
-    // Initiate pending read for a new HTTP request to replace the one that just completed
+    // Increase the count of new read requests to initialize to replace the one that just completed.
+    // Actual initialization will be done in the uv_prepare callback httpsys_prepare_new_requests 
+    // associated with this server.
 
-    if (S_OK != (hr = httpsys_initiate_new_request(uv_httpsys->requestQueue)))
-    {
-        // Initiation failed - notify JavaScript
-        httpsys_notify_error(uv_httpsys, HTTPSYS_ERROR_INITIALIZING_REQUEST, hr);
-    }
+    uv_httpsys->uv_httpsys_server->readsToInitialize++;
 
     // Process async completion
 
@@ -281,7 +311,7 @@ void httpsys_new_request_callback(uv_async_t* handle, int status)
             else if (S_OK != (hr = httpsys_initiate_read_request_body(uv_httpsys)))
             {
                 // Initiation failed - notify JavaScript
-                
+
                 httpsys_notify_error(uv_httpsys, HTTPSYS_ERROR_INITIALIZING_READ_REQUEST_BODY, hr);
                 httpsys_free(uv_httpsys);
                 uv_httpsys = NULL;
@@ -290,16 +320,12 @@ void httpsys_new_request_callback(uv_async_t* handle, int status)
     }
 }
 
-HRESULT httpsys_initiate_new_request(HANDLE requestQueue)
+HRESULT httpsys_initiate_new_request(uv_httpsys_t* uv_httpsys)
 {
     HRESULT hr;
-    uv_httpsys_t* uv_httpsys = NULL;
 
     // Create libuv async handle and initialize it
 
-    ErrorIf(NULL == (uv_httpsys = (uv_httpsys_t*)malloc(sizeof(uv_httpsys_t))), ERROR_NOT_ENOUGH_MEMORY);
-    RtlZeroMemory(uv_httpsys, sizeof(uv_httpsys_t));
-    uv_httpsys->requestQueue = requestQueue;
     CheckError(uv_async_init(uv_default_loop(), &uv_httpsys->uv_async, httpsys_new_request_callback));
 
     // Allocate initial buffer to receice the HTTP request
@@ -312,7 +338,7 @@ HRESULT httpsys_initiate_new_request(HANDLE requestQueue)
     // associated with the default libuv event loop. 
 
     hr = HttpReceiveHttpRequest(
-        requestQueue,
+        uv_httpsys->uv_httpsys_server->requestQueue,
         HTTP_NULL_ID,
         0,
         (PHTTP_REQUEST)uv_httpsys->buffer,
@@ -320,14 +346,20 @@ HRESULT httpsys_initiate_new_request(HANDLE requestQueue)
         NULL,
         &uv_httpsys->uv_async.async_req.overlapped);
 
-    ErrorIf(NO_ERROR != hr && ERROR_IO_PENDING != hr, hr);
+    if (NO_ERROR == hr)
+    {
+        // Synchronous completion.  
+
+        httpsys_new_request_callback(&uv_httpsys->uv_async, 0);
+    }
+    else 
+    {
+        ErrorIf(ERROR_IO_PENDING != hr, hr);
+    }
 
     return S_OK;
 
 Error:
-
-    httpsys_free(uv_httpsys);
-    uv_httpsys = NULL;
 
     return hr;
 }
@@ -468,7 +500,7 @@ HRESULT httpsys_initiate_read_request_body(uv_httpsys_t* uv_httpsys)
     // Initiate async receive of the HTTP request body
 
     hr = HttpReceiveRequestEntityBody(
-        uv_httpsys->requestQueue,
+        uv_httpsys->uv_httpsys_server->requestQueue,
         uv_httpsys->requestId,
         0,  
         uv_httpsys->buffer,
@@ -486,9 +518,17 @@ HRESULT httpsys_initiate_read_request_body(uv_httpsys_t* uv_httpsys)
         Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_END_REQUEST);
         httpsys_make_callback(event);
     }
+    else if (NO_ERROR == hr) 
+    {
+        // Synchronous completion. Insert a pending req into libuv loop to execute the callback after
+        // unwinding the stack without posting a completion to the IO completion port. 
+
+        //uv_insert_pending_req(uv_httpsys->uv_async.loop, &uv_httpsys->uv_async.async_req);
+        httpsys_read_request_body_callback(&uv_httpsys->uv_async, 0);
+    }
     else 
     {
-        ErrorIf(NO_ERROR != hr && ERROR_IO_PENDING != hr, hr);
+        ErrorIf(ERROR_IO_PENDING != hr, hr);
     }
 
     return S_OK;
@@ -513,20 +553,50 @@ Handle<Value> httpsys_init(const Arguments& args)
     return handleScope.Close(Undefined());
 }
 
+void httpsys_prepare_new_requests(uv_prepare_t* handle, int status)
+{
+    uv_httpsys_server_t* uv_httpsys_server = CONTAINING_RECORD(handle, uv_httpsys_server_t, uv_prepare);
+    HRESULT hr;
+    uv_httpsys_t* uv_httpsys = NULL;
+
+    while (uv_httpsys_server->readsToInitialize)
+    {
+        // TODO: address a situation when some new requests fail while others not - cancel them?
+        ErrorIf(NULL == (uv_httpsys = (uv_httpsys_t*)malloc(sizeof(uv_httpsys_t))),
+            ERROR_NOT_ENOUGH_MEMORY);
+        RtlZeroMemory(uv_httpsys, sizeof(uv_httpsys_t));
+        uv_httpsys->uv_httpsys_server = uv_httpsys_server;
+        CheckError(httpsys_initiate_new_request(uv_httpsys));
+        uv_httpsys = NULL;
+        uv_httpsys_server->readsToInitialize--;
+    }
+
+    return;
+
+Error:
+
+    if (NULL != uv_httpsys)
+    {
+        httpsys_free(uv_httpsys);
+        uv_httpsys = NULL;
+    }
+
+    httpsys_notify_error(uv_httpsys_server, HTTPSYS_ERROR_INITIALIZING_REQUEST, hr);
+
+    return;
+}
+
 Handle<Value> httpsys_listen(const Arguments& args)
 {
     HandleScope handleScope;
     HRESULT hr;
     HTTPAPI_VERSION HttpApiVersion = HTTPAPI_VERSION_2;
-    HTTP_SERVER_SESSION_ID sessionId = HTTP_NULL_ID;
-    HTTP_URL_GROUP_ID groupId = HTTP_NULL_ID;
     WCHAR url[MAX_PATH + 1];
-    HANDLE requestQueue = NULL;
     HTTP_BINDING_INFO bindingInfo;
     uv_loop_t* loop;
-    Handle<Object> result;
-    uint32_t* twoint;
-    int pendingReadCount;
+    Handle<Value> result;
+    uv_httpsys_t* uv_httpsys = NULL;
+    uv_httpsys_server_t* uv_httpsys_server = NULL;
 
     // Process arguments
 
@@ -543,23 +613,29 @@ Handle<Value> httpsys_listen(const Arguments& args)
         initialized = 1;
     }
 
+    // Create uv_httpsys_server_t
+
+    ErrorIf(NULL == (uv_httpsys_server = (uv_httpsys_server_t*)malloc(sizeof(uv_httpsys_server_t))),
+        ERROR_NOT_ENOUGH_MEMORY);
+    RtlZeroMemory(uv_httpsys_server, sizeof(uv_httpsys_server_t));
+
     // Create HTTP.SYS session and associate it with URL group containing the
     // single listen URL. 
 
     CheckError(HttpCreateServerSession(
         HttpApiVersion, 
-        &sessionId, 
+        &uv_httpsys_server->sessionId, 
         NULL));
 
     CheckError(HttpCreateUrlGroup(
-        sessionId,
-        &groupId,
+        uv_httpsys_server->sessionId,
+        &uv_httpsys_server->groupId,
         NULL));
 
     options->Get(String::New("url"))->ToString()->Write((uint16_t*)url, 0, MAX_PATH);
 
     CheckError(HttpAddUrlToUrlGroup(
-        groupId,
+        uv_httpsys_server->groupId,
         url,
         0,
         NULL));
@@ -585,7 +661,7 @@ Handle<Value> httpsys_listen(const Arguments& args)
         url,
         NULL,
         HTTP_CREATE_REQUEST_QUEUE_FLAG_OPEN_EXISTING,
-        &requestQueue);
+        &uv_httpsys_server->requestQueue);
 
     if (ERROR_FILE_NOT_FOUND == hr)
     {
@@ -596,22 +672,30 @@ Handle<Value> httpsys_listen(const Arguments& args)
                 url,
                 NULL,
                 0,
-                &requestQueue));
+                &uv_httpsys_server->requestQueue));
     }
     else
     {
         CheckError(hr);
     }
 
+    // Configure the request queue to prevent queuing a completion to the libuv
+    // IO completion port when an async operation completes synchronously. 
+
+    ErrorIf(!SetFileCompletionNotificationModes(
+        uv_httpsys_server->requestQueue,
+        FILE_SKIP_COMPLETION_PORT_ON_SUCCESS | FILE_SKIP_SET_EVENT_ON_HANDLE),
+        GetLastError());
+
     // Bind the request queue with the URL group to enable receiving
     // HTTP traffic on the request queue. 
 
     RtlZeroMemory(&bindingInfo, sizeof(HTTP_BINDING_INFO));
-    bindingInfo.RequestQueueHandle = requestQueue;
+    bindingInfo.RequestQueueHandle = uv_httpsys_server->requestQueue;
     bindingInfo.Flags.Present = 1;
 
     CheckError(HttpSetUrlGroupProperty(
-        groupId,
+        uv_httpsys_server->groupId,
         HttpServerBindingProperty,
         &bindingInfo,
         sizeof(HTTP_BINDING_INFO)));
@@ -629,62 +713,54 @@ Handle<Value> httpsys_listen(const Arguments& args)
 
     loop = uv_default_loop();
     ErrorIf(NULL == CreateIoCompletionPort(
-        requestQueue,
+        uv_httpsys_server->requestQueue,
         loop->iocp,
-        (ULONG_PTR)requestQueue,
+        (ULONG_PTR)uv_httpsys_server->requestQueue,
         0), 
         GetLastError());
 
-    // Initiate reading HTTP requests. The number of pending async requests
-    // against HTTP.SYS is specified in the pendingReadCount option.
+    // Initiate uv_prepare associated with this server that will be responsible for 
+    // initializing new pending receives of new HTTP reqests against HTTP.SYS 
+    // to replace completed ones. This logic will run once per iteration of the libuv event loop.
+    // The first execution of the callback will initiate the first batch of reads. 
 
-    pendingReadCount = options->Get(String::New("pendingReadCount"))->Int32Value();
-    for (int i = 0; i < pendingReadCount; i++)
-    {
-        // TODO: address a situation when some new requests fail while others not - cancel them?
-        CheckError(httpsys_initiate_new_request(requestQueue));
-    }
+    uv_prepare_init(loop, &uv_httpsys_server->uv_prepare);
+    uv_prepare_start(&uv_httpsys_server->uv_prepare, httpsys_prepare_new_requests);
+    uv_httpsys_server->readsToInitialize = options->Get(String::New("pendingReadCount"))->Uint32Value();
 
-    // Create an object containing all the handles representing the listener
-    // and return it. The object should be passed to httpsys_stop_listen. 
-    // The requestQueue member is used to correlate an event with the listener
-    // when the callback set through httpsys_set_callback is invoked.
+    // TODO: uv_httpsys_server representation will need to be fixed on 64-bit systems.
 
-    // The groupId and sessionId are 8 bytes long. Each is repesented as two 
-    // 4 byte unsigned integers to leverage efficient V8 representation without
-    // allocating heap memory for an External. 
-
-    // TODO: requestQueue representation will need to be fixed on 64-bit systems.
-
-    result = Object::New();
-    result->Set(v8requestQueue, Integer::NewFromUnsigned((uint32_t)requestQueue));
-    twoint = (uint32_t*)&groupId;
-    result->Set(String::New("groupId0"), Integer::NewFromUnsigned(twoint[0]));
-    result->Set(String::New("groupId1"), Integer::NewFromUnsigned(twoint[1]));
-    twoint = (uint32_t*)&sessionId;
-    result->Set(String::New("sessionId0"), Integer::NewFromUnsigned(twoint[0]));
-    result->Set(String::New("sessionId1"), Integer::NewFromUnsigned(twoint[1]));
+    result = Integer::NewFromUnsigned((uint32_t)uv_httpsys_server);
 
     return handleScope.Close(result);
 
 Error:
 
-    if (HTTP_NULL_ID != groupId)
+    if (NULL != uv_httpsys_server)
     {
-        HttpCloseUrlGroup(groupId);
-        groupId = HTTP_NULL_ID;
+        if (HTTP_NULL_ID != uv_httpsys_server->groupId)
+        {
+            HttpCloseUrlGroup(uv_httpsys_server->groupId);
+        }
+
+        if (NULL != uv_httpsys_server->requestQueue)
+        {
+            HttpCloseRequestQueue(uv_httpsys_server->requestQueue);
+        }
+
+        if (HTTP_NULL_ID != uv_httpsys_server->sessionId)
+        {
+            HttpCloseServerSession(uv_httpsys_server->sessionId);
+        }
+
+        free(uv_httpsys_server);
+        uv_httpsys_server = NULL;
     }
 
-    if (NULL != requestQueue)
+    if (NULL != uv_httpsys)
     {
-        HttpCloseRequestQueue(requestQueue);
-        requestQueue = NULL;
-    }
-
-    if (HTTP_NULL_ID != sessionId)
-    {
-        HttpCloseServerSession(sessionId);
-        sessionId = HTTP_NULL_ID;
+        httpsys_free(uv_httpsys);
+        uv_httpsys = NULL;
     }
 
     return handleScope.Close(ThrowException(Int32::New(hr)));
@@ -694,20 +770,12 @@ Handle<Value> httpsys_stop_listen(const Arguments& args)
 {
     HandleScope handleScope;
     HRESULT hr;
-    uint32_t twoint[2];
 
-    Handle<Object> options = args[0]->ToObject();
-
-    twoint[0] = options->Get(String::New("groupId0"))->Uint32Value();
-    twoint[1] = options->Get(String::New("groupId1"))->Uint32Value();
-    CheckError(HttpCloseUrlGroup(*(HTTP_URL_GROUP_ID*)&twoint));
-
-    CheckError(HttpCloseRequestQueue(
-        (HANDLE)options->Get(v8requestQueue)->Uint32Value()));
-
-    twoint[0] = options->Get(String::New("sessionId0"))->Uint32Value();
-    twoint[1] = options->Get(String::New("sessionId1"))->Uint32Value();
-    CheckError(HttpCloseServerSession(*(HTTP_SERVER_SESSION_ID*)&twoint));
+    uv_httpsys_server_t* uv_httpsys_server = (uv_httpsys_server_t*)args[0]->Uint32Value();
+    CheckError(HttpCloseUrlGroup(uv_httpsys_server->groupId));
+    CheckError(HttpCloseRequestQueue(uv_httpsys_server->requestQueue));
+    CheckError(HttpCloseServerSession(uv_httpsys_server->sessionId));
+    uv_prepare_stop(&uv_httpsys_server->uv_prepare);
 
     return handleScope.Close(Undefined());
 
@@ -820,7 +888,7 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
     // Initiate async send of the HTTP response headers and optional body
 
     hr = HttpSendHttpResponse(
-        uv_httpsys->requestQueue,
+        uv_httpsys->uv_httpsys_server->requestQueue,
         uv_httpsys->requestId,
         flags,
         &uv_httpsys->response,
@@ -831,7 +899,18 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
         &uv_httpsys->uv_async.async_req.overlapped,
         NULL);
 
-    ErrorIf(NO_ERROR != hr && ERROR_IO_PENDING != hr, hr);
+    if (NO_ERROR == hr)
+    {
+        // Synchronous completion. Insert a pending req into libuv loop to execute the callback after
+        // unwinding the stack without posting a completion to the IO completion port. 
+
+        // uv_insert_pending_req(uv_httpsys->uv_async.loop, &uv_httpsys->uv_async.async_req);
+        httpsys_write_callback(&uv_httpsys->uv_async, 0);
+    }
+    else 
+    {
+        ErrorIf(ERROR_IO_PENDING != hr, hr);
+    }
 
     return handleScope.Close(Undefined());
 
@@ -953,7 +1032,7 @@ Handle<Value> httpsys_write_body(const Arguments& args)
     // Initiate async send of the HTTP response body
 
     hr = HttpSendResponseEntityBody(
-        uv_httpsys->requestQueue,
+        uv_httpsys->uv_httpsys_server->requestQueue,
         uv_httpsys->requestId,
         flags,
         uv_httpsys->chunk.FromMemory.pBuffer ? 1 : 0,
@@ -964,7 +1043,18 @@ Handle<Value> httpsys_write_body(const Arguments& args)
         &uv_httpsys->uv_async.async_req.overlapped,
         NULL);
 
-    ErrorIf(NO_ERROR != hr && ERROR_IO_PENDING != hr, hr);
+    if (NO_ERROR == hr)
+    {
+        // Synchronous completion. Insert a pending req into libuv loop to execute the callback after
+        // unwinding the stack without posting a completion to the IO completion port. 
+
+        //uv_insert_pending_req(uv_httpsys->uv_async.loop, &uv_httpsys->uv_async.async_req);
+        httpsys_write_callback(&uv_httpsys->uv_async, 0);
+    }
+    else 
+    {
+        ErrorIf(ERROR_IO_PENDING != hr, hr);
+    }
 
     return handleScope.Close(Undefined());
 
@@ -1005,7 +1095,7 @@ void init(Handle<Object> target)
     // Create global V8 strings to reuse across requests
 
     v8method = Persistent<String>::New(String::NewSymbol("method"));
-    v8requestQueue = Persistent<String>::New(String::NewSymbol("requestQueue"));
+    v8uv_httpsys_server = Persistent<String>::New(String::NewSymbol("uv_httpsys_server"));
     v8req = Persistent<String>::New(String::NewSymbol("req"));
     v8httpHeaders = Persistent<String>::New(String::NewSymbol("headers"));
     v8httpVersionMinor = Persistent<String>::New(String::NewSymbol("httpVersionMinor"));
