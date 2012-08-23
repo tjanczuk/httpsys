@@ -85,6 +85,7 @@ void httpsys_new_request_callback(uv_async_t* handle, int status);
 void httpsys_prepare_new_requests(uv_prepare_t* handle, int status);
 HRESULT httpsys_initiate_new_request(uv_httpsys_t* uv_httpsys);
 void httpsys_read_request_body_callback(uv_async_t* handle, int status);
+HRESULT httpsys_read_request_body_loop(uv_httpsys_t* uv_httpsys);
 HRESULT httpsys_initiate_read_request_body(uv_httpsys_t* uv_httpsys);
 void httpsys_write_callback(uv_async_t* handle, int status);
 

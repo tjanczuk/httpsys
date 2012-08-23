@@ -205,7 +205,6 @@ Handle<Value> httpsys_notify_error(uv_httpsys_t* uv_httpsys, uv_httpsys_event_ty
 void httpsys_new_request_callback(uv_async_t* handle, int status)
 {
     HTTPSYS_CALLBACK_PREAMBLE
-    HRESULT hr;
 
     // Copy the request ID assigned to the request by HTTP.SYS to uv_httpsys 
     // to start subsequent async operations related to this request
@@ -308,14 +307,12 @@ void httpsys_new_request_callback(uv_async_t* handle, int status)
                 Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_END_REQUEST);
                 httpsys_make_callback(event);
             }
-            else if (S_OK != (hr = httpsys_initiate_read_request_body(uv_httpsys)))
+            else 
             {
-                // Initiation failed - notify JavaScript
+                // Start synchronous body reading loop.
 
-                httpsys_notify_error(uv_httpsys, HTTPSYS_ERROR_INITIALIZING_READ_REQUEST_BODY, hr);
-                httpsys_free(uv_httpsys);
-                uv_httpsys = NULL;
-            }            
+                httpsys_read_request_body_loop(uv_httpsys);
+            }
         }
     }
 }
@@ -431,7 +428,18 @@ void httpsys_free(uv_httpsys_t* uv_httpsys)
 void httpsys_read_request_body_callback(uv_async_t* handle, int status)
 {
     HTTPSYS_CALLBACK_PREAMBLE
-    HRESULT hr;
+
+    // The "status" parameter is 0 if the callback is an async completion from libuv. 
+    // Otherwise, the parameter is a uv_httpsys_t** that the callback is supposed to set to the
+    // uv_httpsys that just completed if reading of the body should continue synchronously
+    // (i.e. there is no error during the callback and the application does not pause the request),
+    // or to NULL if the body should not be read any more.
+
+    uv_httpsys_t** uv_httpsys_result = (uv_httpsys_t**)status;
+    if (uv_httpsys_result)
+    {
+        *uv_httpsys_result = NULL;
+    }
 
     // Process async completion
 
@@ -476,15 +484,39 @@ void httpsys_read_request_body_callback(uv_async_t* handle, int status)
             // Otherwise request had been paused and will be resumed asynchronously from JavaScript
             // with a call to httpsys_resume.
 
-            if (S_OK != (hr = httpsys_initiate_read_request_body(uv_httpsys)))
+            if (uv_httpsys_result)
             {
-                // Initiation failed - notify JavaScript
-                httpsys_notify_error(uv_httpsys, HTTPSYS_ERROR_INITIALIZING_READ_REQUEST_BODY, hr);
-                httpsys_free(uv_httpsys);
-                uv_httpsys = NULL;
-            }            
+                // This is a synchronous completion of a read. Indicate to the caller the reading should continue
+                // and unwind the stack.
+
+                *uv_httpsys_result = uv_httpsys;
+            }
+            else 
+            {
+                // This is an asynchronous completion of a read. Restart the reading loop. 
+
+                httpsys_read_request_body_loop(uv_httpsys);
+            }       
         }       
     }
+}
+
+HRESULT httpsys_read_request_body_loop(uv_httpsys_t* uv_httpsys)
+{
+    HRESULT hr;
+
+    // Continue reading the request body synchronously until EOF, and error, 
+    // request is paused or async oompletion is expected.
+    while (NULL != uv_httpsys && NO_ERROR == (hr = httpsys_initiate_read_request_body(uv_httpsys)))
+    {
+        // Use the "status" parameter to the callback as a mechanism to return data
+        // from the callback. If upon return the uv_httpsys is still not NULL,
+        // it means there was no error and the request was not paused by the application.
+
+        httpsys_read_request_body_callback(&uv_httpsys->uv_async, (int)&uv_httpsys);
+    }
+
+    return (NO_ERROR == hr || ERROR_HANDLE_EOF == hr || ERROR_IO_PENDING == hr) ? S_OK : hr;
 }
 
 HRESULT httpsys_initiate_read_request_body(uv_httpsys_t* uv_httpsys)
@@ -518,20 +550,16 @@ HRESULT httpsys_initiate_read_request_body(uv_httpsys_t* uv_httpsys)
         Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_END_REQUEST);
         httpsys_make_callback(event);
     }
-    else if (NO_ERROR == hr) 
+    else if (ERROR_IO_PENDING != hr && NO_ERROR != hr)
     {
-        // Synchronous completion. Insert a pending req into libuv loop to execute the callback after
-        // unwinding the stack without posting a completion to the IO completion port. 
-
-        //uv_insert_pending_req(uv_httpsys->uv_async.loop, &uv_httpsys->uv_async.async_req);
-        httpsys_read_request_body_callback(&uv_httpsys->uv_async, 0);
-    }
-    else 
-    {
-        ErrorIf(ERROR_IO_PENDING != hr, hr);
+        // Initiation failed - notify JavaScript
+        httpsys_notify_error(uv_httpsys, HTTPSYS_ERROR_INITIALIZING_READ_REQUEST_BODY, hr);
+        httpsys_free(uv_httpsys);
+        uv_httpsys = NULL;
     }
 
-    return S_OK;
+    // Result of NO_ERROR at this point means synchronous completion that must be handled by the caller
+    // since the IO completion port of libuv will not receive a completion.
 
 Error:
 
@@ -788,14 +816,13 @@ Handle<Value> httpsys_resume(const Arguments& args)
 {
     HTTPSYS_EXPORT_PREAMBLE;
 
-    CheckError(httpsys_initiate_read_request_body(uv_httpsys));
+    CheckError(httpsys_read_request_body_loop(uv_httpsys));
 
     return handleScope.Close(Undefined());
 
 Error:
 
-    httpsys_free(uv_httpsys);
-    uv_httpsys = NULL;
+    // uv_httpsys had been freed alredy
 
     return handleScope.Close(ThrowException(Int32::New(hr)));
 }
