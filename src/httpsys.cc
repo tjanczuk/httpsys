@@ -132,19 +132,6 @@ char* verbs[] = {
     HRESULT hr; \
     uv_httpsys_t* uv_httpsys = (uv_httpsys_t*)args[0]->ToObject()->Get(v8uv_httpsys)->Uint32Value();
 
-void uv_insert_pending_req(uv_loop_t* loop, uv_req_t* req) 
-{
-  req->next_req = NULL;
-  if (loop->pending_reqs_tail) {
-    req->next_req = loop->pending_reqs_tail->next_req;
-    loop->pending_reqs_tail->next_req = req;
-    loop->pending_reqs_tail = req;
-  } else {
-    req->next_req = req;
-    loop->pending_reqs_tail = req;
-  }
-}
-
 Handle<Value> httpsys_make_callback(Handle<Value> options)
 {
     HandleScope handleScope;
@@ -928,18 +915,17 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
 
     if (NO_ERROR == hr)
     {
-        // Synchronous completion. Insert a pending req into libuv loop to execute the callback after
-        // unwinding the stack without posting a completion to the IO completion port. 
+        // Synchronous completion. 
 
-        // uv_insert_pending_req(uv_httpsys->uv_async.loop, &uv_httpsys->uv_async.async_req);
-        httpsys_write_callback(&uv_httpsys->uv_async, 0);
+        httpsys_write_callback(&uv_httpsys->uv_async, 1);
     }
     else 
     {
         ErrorIf(ERROR_IO_PENDING != hr, hr);
     }
 
-    return handleScope.Close(Undefined());
+    // Return true if async completion is pending and an event will be generated once completed
+    return handleScope.Close(Boolean::New(ERROR_IO_PENDING == hr));
 
 Error:
 
@@ -966,11 +952,17 @@ void httpsys_write_callback(uv_async_t* handle, int status)
         httpsys_free(uv_httpsys);
         uv_httpsys = NULL;
     }
-    else
+    else 
     {
         // Successful completion 
 
-        Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_WRITTEN);
+        if (0 == status)
+        {
+            // Call completed asynchronously - send notification to JavaScript.
+
+            Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_WRITTEN);
+            httpsys_make_callback(event);
+        }
 
         if (uv_httpsys->lastChunkSent)
         {
@@ -978,8 +970,6 @@ void httpsys_write_callback(uv_async_t* handle, int status)
             httpsys_free(uv_httpsys);
             uv_httpsys = NULL;
         }
-
-        httpsys_make_callback(event);
     }    
 }
 
@@ -1072,18 +1062,17 @@ Handle<Value> httpsys_write_body(const Arguments& args)
 
     if (NO_ERROR == hr)
     {
-        // Synchronous completion. Insert a pending req into libuv loop to execute the callback after
-        // unwinding the stack without posting a completion to the IO completion port. 
+        // Synchronous completion. 
 
-        //uv_insert_pending_req(uv_httpsys->uv_async.loop, &uv_httpsys->uv_async.async_req);
-        httpsys_write_callback(&uv_httpsys->uv_async, 0);
+        httpsys_write_callback(&uv_httpsys->uv_async, 1);
     }
     else 
     {
         ErrorIf(ERROR_IO_PENDING != hr, hr);
     }
 
-    return handleScope.Close(Undefined());
+    // Return true if async completion is pending and an event will be generated once completed
+    return handleScope.Close(Boolean::New(ERROR_IO_PENDING == hr));
 
 Error:
 
