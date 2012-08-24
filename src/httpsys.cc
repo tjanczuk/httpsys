@@ -23,6 +23,8 @@ ULONG requestQueueLength;
 int pendingReadCount;
 Persistent<Function> callback;
 Persistent<Function> bufferConstructor;
+HTTP_CACHE_POLICY cachePolicy;
+ULONG defaultCacheDuration;
 
 // Global V8 strings reused across requests
 Handle<String> v8uv_httpsys_server;
@@ -44,6 +46,7 @@ Handle<String> v8isLastChunk;
 Handle<String> v8chunks;
 Handle<String> v8id;
 Handle<String> v8value;
+Handle<String> v8cacheDuration;
 
 // Maps HTTP_HEADER_ID enum to v8 string
 // http://msdn.microsoft.com/en-us/library/windows/desktop/aa364526(v=vs.85).aspx
@@ -586,6 +589,17 @@ Handle<Value> httpsys_init(const Arguments& args)
     initialBufferSize = options->Get(String::New("initialBufferSize"))->Int32Value();
     requestQueueLength = options->Get(String::New("requestQueueLength"))->Int32Value();
     pendingReadCount = options->Get(String::New("pendingReadCount"))->Int32Value();
+    int cacheDuration = options->Get(String::New("cacheDuration"))->Int32Value();
+    if (0 > cacheDuration)
+    {
+        cachePolicy.Policy = HttpCachePolicyNocache;
+        cachePolicy.SecondsToLive = 0;
+    }
+    else 
+    {
+        cachePolicy.Policy = HttpCachePolicyTimeToLive;
+        defaultCacheDuration = cacheDuration;
+    }
 
     return handleScope.Close(Undefined());
 }
@@ -874,6 +888,7 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
     Handle<String> headerName;
     Handle<Array> knownHeaders;
     Handle<Object> knownHeader;
+    Handle<Value> cacheDuration;
     ULONG flags;
 
     // Initialize libuv handle representing this async operation
@@ -946,6 +961,17 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
         uv_httpsys->response.pEntityChunks = &uv_httpsys->chunk;
     }
 
+    // Determine cache policy
+    
+    if (HttpCachePolicyTimeToLive == cachePolicy.Policy)
+    {
+        // If HTTP.SYS output caching is enabled, establish the duration to cache for
+        // based on the setting on the message or the global default, in that order of precedence
+
+        cacheDuration = options->Get(v8cacheDuration);
+        cachePolicy.SecondsToLive = cacheDuration->IsUint32() ? cacheDuration->Uint32Value() : defaultCacheDuration;
+    }
+
     // TOOD: support response trailers
 
     // Initiate async send of the HTTP response headers and optional body
@@ -955,7 +981,7 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
         uv_httpsys->requestId,
         flags,
         &uv_httpsys->response,
-        NULL,
+        &cachePolicy,
         NULL,
         NULL,
         0,
@@ -1178,6 +1204,7 @@ void init(Handle<Object> target)
     v8chunks = Persistent<String>::New(String::NewSymbol("chunks"));
     v8id = Persistent<String>::New(String::NewSymbol("id"));
     v8value = Persistent<String>::New(String::NewSymbol("value"));
+    v8cacheDuration = Persistent<String>::New(String::NewSymbol("cacheDuration"));
 
     // Capture the constructor function of JavaScript Buffer implementation
 
