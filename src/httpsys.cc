@@ -629,6 +629,7 @@ Handle<Value> httpsys_listen(const Arguments& args)
     HRESULT hr;
     HTTPAPI_VERSION HttpApiVersion = HTTPAPI_VERSION_2;
     WCHAR url[MAX_PATH + 1];
+    WCHAR requestQueueName[MAX_PATH + 1];
     HTTP_BINDING_INFO bindingInfo;
     uv_loop_t* loop;
     Handle<Value> result;
@@ -656,31 +657,12 @@ Handle<Value> httpsys_listen(const Arguments& args)
         ERROR_NOT_ENOUGH_MEMORY);
     RtlZeroMemory(uv_httpsys_server, sizeof(uv_httpsys_server_t));
 
-    // Create HTTP.SYS session and associate it with URL group containing the
-    // single listen URL. 
-
-    CheckError(HttpCreateServerSession(
-        HttpApiVersion, 
-        &uv_httpsys_server->sessionId, 
-        NULL));
-
-    CheckError(HttpCreateUrlGroup(
-        uv_httpsys_server->sessionId,
-        &uv_httpsys_server->groupId,
-        NULL));
-
-    options->Get(String::New("url"))->ToString()->Write((uint16_t*)url, 0, MAX_PATH);
-
-    CheckError(HttpAddUrlToUrlGroup(
-        uv_httpsys_server->groupId,
-        url,
-        0,
-        NULL));
-
     // Create the request queue name by replacing slahes in the URL with _
     // to make it a valid file name.
 
-    for (WCHAR* current = url; *current; current++)
+    options->Get(String::New("url"))->ToString()->Write((uint16_t*)requestQueueName, 0, MAX_PATH);
+
+    for (WCHAR* current = requestQueueName; *current; current++)
     {
         if (L'/' == *current)
         {
@@ -695,7 +677,7 @@ Handle<Value> httpsys_listen(const Arguments& args)
 
     hr = HttpCreateRequestQueue(
         HttpApiVersion,
-        url,
+        requestQueueName,
         NULL,
         HTTP_CREATE_REQUEST_QUEUE_FLAG_OPEN_EXISTING,
         &uv_httpsys_server->requestQueue);
@@ -706,25 +688,59 @@ Handle<Value> httpsys_listen(const Arguments& args)
 
         CheckError(HttpCreateRequestQueue(
                 HttpApiVersion,
-                url,
+                requestQueueName,
                 NULL,
                 0,
                 &uv_httpsys_server->requestQueue));
+
+        // Create HTTP.SYS session and associate it with URL group containing the
+        // single listen URL. 
+
+        CheckError(HttpCreateServerSession(
+            HttpApiVersion, 
+            &uv_httpsys_server->sessionId, 
+            NULL));
+
+        CheckError(HttpCreateUrlGroup(
+            uv_httpsys_server->sessionId,
+            &uv_httpsys_server->groupId,
+            NULL));
+
+        options->Get(String::New("url"))->ToString()->Write((uint16_t*)url, 0, MAX_PATH);
+
+        CheckError(HttpAddUrlToUrlGroup(
+            uv_httpsys_server->groupId,
+            url,
+            0,
+            NULL));
+
+        // Set the request queue length
+
+        CheckError(HttpSetRequestQueueProperty(
+            uv_httpsys_server->requestQueue,
+            HttpServerQueueLengthProperty,
+            &requestQueueLength,
+            sizeof(requestQueueLength),
+            0,
+            NULL));        
+
+        // Bind the request queue with the URL group to enable receiving
+        // HTTP traffic on the request queue. 
+
+        RtlZeroMemory(&bindingInfo, sizeof(HTTP_BINDING_INFO));
+        bindingInfo.RequestQueueHandle = uv_httpsys_server->requestQueue;
+        bindingInfo.Flags.Present = 1;
+
+        CheckError(HttpSetUrlGroupProperty(
+            uv_httpsys_server->groupId,
+            HttpServerBindingProperty,
+            &bindingInfo,
+            sizeof(HTTP_BINDING_INFO)));        
     }
     else
     {
         CheckError(hr);
     }
-
-    // Set the request queue length
-
-    CheckError(HttpSetRequestQueueProperty(
-        uv_httpsys_server->requestQueue,
-        HttpServerQueueLengthProperty,
-        &requestQueueLength,
-        sizeof(requestQueueLength),
-        0,
-        NULL));
 
     // Configure the request queue to prevent queuing a completion to the libuv
     // IO completion port when an async operation completes synchronously. 
@@ -733,19 +749,6 @@ Handle<Value> httpsys_listen(const Arguments& args)
         uv_httpsys_server->requestQueue,
         FILE_SKIP_COMPLETION_PORT_ON_SUCCESS | FILE_SKIP_SET_EVENT_ON_HANDLE),
         GetLastError());
-
-    // Bind the request queue with the URL group to enable receiving
-    // HTTP traffic on the request queue. 
-
-    RtlZeroMemory(&bindingInfo, sizeof(HTTP_BINDING_INFO));
-    bindingInfo.RequestQueueHandle = uv_httpsys_server->requestQueue;
-    bindingInfo.Flags.Present = 1;
-
-    CheckError(HttpSetUrlGroupProperty(
-        uv_httpsys_server->groupId,
-        HttpServerBindingProperty,
-        &bindingInfo,
-        sizeof(HTTP_BINDING_INFO)));
 
     // Associate the HTTP.SYS request queue handle with the IO completion port 
     // of the default libuv event loop used by node. This will cause 
@@ -819,9 +822,21 @@ Handle<Value> httpsys_stop_listen(const Arguments& args)
     HRESULT hr;
 
     uv_httpsys_server_t* uv_httpsys_server = (uv_httpsys_server_t*)args[0]->Uint32Value();
-    CheckError(HttpCloseUrlGroup(uv_httpsys_server->groupId));
-    CheckError(HttpCloseRequestQueue(uv_httpsys_server->requestQueue));
-    CheckError(HttpCloseServerSession(uv_httpsys_server->sessionId));
+    if (HTTP_NULL_ID != uv_httpsys_server->groupId)
+    {
+        CheckError(HttpCloseUrlGroup(uv_httpsys_server->groupId));
+    }
+
+    if (NULL != uv_httpsys_server->requestQueue)
+    {
+        CheckError(HttpCloseRequestQueue(uv_httpsys_server->requestQueue));
+    }
+
+    if (HTTP_NULL_ID != uv_httpsys_server->sessionId)
+    {
+        CheckError(HttpCloseServerSession(uv_httpsys_server->sessionId));
+    }
+
     uv_prepare_stop(&uv_httpsys_server->uv_prepare);
 
     // TODO: deallocate uv_httpsys_server and release uv_httpsys_server->event 
