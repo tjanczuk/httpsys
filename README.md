@@ -1,4 +1,4 @@
-httpsys - native HTTP stack for node.js apps on Windows
+httpsys - native HTTP stack for node.js on Windows
 ===
 
 The `httpsys` module is a native HTTP stack for node.js applications on Windows. It is based on HTTP.SYS. 
