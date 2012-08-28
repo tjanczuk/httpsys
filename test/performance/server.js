@@ -7,15 +7,36 @@
 
     HTTPSYS_CLUSTER - if set, a cluster is set up with the number of worker processes
                       equal to the number of CPUs; otherwise a one process server is set up
+
+    HTTPSYS_SSL     - if set, HTTPS is used; otherwise HTTP.
+                      In case of HTTP.SYS, certificates must be configured with
+                      `netsh http add sslcert`
 */
 
-var http = process.env.HTTPSYS ? require(__dirname + '/../../lib/httpsys.js').http() : require('http');
+var engine;
+if (process.env.HTTPSYS_SSL)
+    engine = process.env.HTTPSYS ? require(__dirname + '/../../lib/httpsys.js').https() : require('https');
+else
+    engine = process.env.HTTPSYS ? require(__dirname + '/../../lib/httpsys.js').http() : require('http');
 
 function createOneServer() {
-    http.createServer(function (req, res) {
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end('Hello, world!');
-    }).listen(process.env.PORT || 8080);
+    if (process.env.HTTPSYS_SSL) {
+        var options = {
+            pfx: require('fs').readFileSync(__dirname + '/x509.pfx'),
+            passphrase: 'httpsys'
+        };
+
+        engine.createServer(options, function (req, res) {
+            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            res.end('Hello, world!');
+        }).listen(process.env.PORT || 8080);
+    }
+    else {
+        engine.createServer(function (req, res) {
+            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            res.end('Hello, world!');
+        }).listen(process.env.PORT || 8080);
+    }
 }
 
 if (process.env.HTTPSYS_CLUSTER) {
@@ -23,8 +44,9 @@ if (process.env.HTTPSYS_CLUSTER) {
     var numCPUs = require('os').cpus().length;
 
     if (cluster.isMaster) {
-        console.log('Setting up clustered, ' + numCPUs + ' process server ' 
-	    + (process.env.HTTPSYS ? 'using HTTP.SYS...' : 'using native node.js HTTP stack...'));
+        console.log('Setting up clustered, ' + numCPUs + ' process ' 
+        + (process.env.HTTPSYS_SSL ? 'HTTPS' : 'HTTP') + ' server ' 
+        + (process.env.HTTPSYS ? 'using HTTP.SYS...' : 'using build-in node.js stack...'));
 
         for (var i = 0; i < numCPUs; i++) {
             cluster.fork(process.env);
@@ -35,12 +57,13 @@ if (process.env.HTTPSYS_CLUSTER) {
         });
     }
     else {
-	createOneServer();
+    createOneServer();
     }
 }
 else {
-    console.log('Setting up non-cluster, one process server ' 
-	+ (process.env.HTTPSYS ? 'using HTTP.SYS...' : 'using native node.js HTTP stack...'));
+    console.log('Setting up non-cluster, one process '
+    + (process.env.HTTPSYS_SSL ? 'HTTPS' : 'HTTP') + ' server ' 
+    + (process.env.HTTPSYS ? 'using HTTP.SYS...' : 'using built-in node.js stack...'));
 
     createOneServer();
 }
