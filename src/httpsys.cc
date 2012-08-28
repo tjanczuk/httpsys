@@ -25,6 +25,7 @@ Persistent<Function> callback;
 Persistent<Function> bufferConstructor;
 HTTP_CACHE_POLICY cachePolicy;
 ULONG defaultCacheDuration;
+Persistent<ObjectTemplate> httpsysObject;
 
 // Global V8 strings reused across requests
 Handle<String> v8uv_httpsys_server;
@@ -133,11 +134,11 @@ char* verbs[] = {
 
 // Processing common to most exported methods:
 // - declare handle scope and hr
-// - extract uv_httpsys_t from the 'uv_httpsys' member of the object passed as the first parameter
+// - extract uv_httpsys_t from the internal field of the object passed as the first parameter
 #define HTTPSYS_EXPORT_PREAMBLE \
     HandleScope handleScope; \
     HRESULT hr; \
-    uv_httpsys_t* uv_httpsys = (uv_httpsys_t*)args[0]->ToObject()->Get(v8uv_httpsys)->Uint32Value();
+    uv_httpsys_t* uv_httpsys = (uv_httpsys_t*)Handle<Object>::Cast(args[0])->GetPointerFromInternalField(0);
 
 Handle<Value> httpsys_make_callback(Handle<Value> options)
 {
@@ -159,12 +160,6 @@ Handle<Object> httpsys_create_event(uv_httpsys_server_t* uv_httpsys_server, int 
 {
     HandleScope handleScope;
 
-    if (uv_httpsys_server->event.IsEmpty())
-    {
-        uv_httpsys_server->event = Persistent<Object>::New(Object::New());    
-        uv_httpsys_server->event->Set(v8uv_httpsys_server, Integer::NewFromUnsigned((uint32_t)uv_httpsys_server)); 
-    }
-
     uv_httpsys_server->event->Set(v8eventType, Integer::NewFromUnsigned(eventType));
 
     return uv_httpsys_server->event;
@@ -174,19 +169,12 @@ Handle<Object> httpsys_create_event(uv_httpsys_t* uv_httpsys, int eventType)
 {
     HandleScope handleScope;
 
-    if (uv_httpsys->event.IsEmpty())
-    {
-        uv_httpsys->event = Persistent<Object>::New(Object::New());
-        uv_httpsys->event->Set(v8uv_httpsys, Integer::NewFromUnsigned((uint32_t)uv_httpsys)); 
-        uv_httpsys->event->Set(v8uv_httpsys_server, Integer::NewFromUnsigned((uint32_t)uv_httpsys->uv_httpsys_server)); 
-    }
-
     uv_httpsys->event->Set(v8eventType, Integer::NewFromUnsigned(eventType));
 
     return uv_httpsys->event;
 }
 
-Handle<Value> httpsys_notify_error(uv_httpsys_server_t* uv_httpsys_server, uv_httpsys_event_type errorType, int code)
+Handle<Value> httpsys_notify_error(uv_httpsys_server_t* uv_httpsys_server, uv_httpsys_event_type errorType, unsigned int code)
 {
     HandleScope handleScope;
 
@@ -196,7 +184,7 @@ Handle<Value> httpsys_notify_error(uv_httpsys_server_t* uv_httpsys_server, uv_ht
     return handleScope.Close(httpsys_make_callback(error));
 }
 
-Handle<Value> httpsys_notify_error(uv_httpsys_t* uv_httpsys, uv_httpsys_event_type errorType, int code)
+Handle<Value> httpsys_notify_error(uv_httpsys_t* uv_httpsys, uv_httpsys_event_type errorType, unsigned int code)
 {
     HandleScope handleScope;
 
@@ -221,15 +209,22 @@ void httpsys_new_request_callback(uv_async_t* handle, int status)
 
     uv_httpsys->uv_httpsys_server->readsToInitialize++;
 
+    // Initialize the JavaScript representation of an event object that will be used
+    // to marshall data into JavaScript for the lifetime of this request.
+
+    uv_httpsys->event = Persistent<Object>::New(httpsysObject->NewInstance());
+    uv_httpsys->event->SetPointerInInternalField(0, (void*)uv_httpsys);
+    uv_httpsys->event->Set(v8uv_httpsys_server, uv_httpsys->uv_httpsys_server->event);     
+
     // Process async completion
 
-    if (S_OK != uv_httpsys->uv_async.async_req.overlapped.Internal)
+    if (S_OK != (NTSTATUS)uv_httpsys->uv_async.async_req.overlapped.Internal)
     {
         // Async completion failed - notify JavaScript
         httpsys_notify_error(
             uv_httpsys, 
             HTTPSYS_ERROR_NEW_REQUEST,
-            uv_httpsys->uv_async.async_req.overlapped.Internal);
+            (unsigned int)uv_httpsys->uv_async.async_req.overlapped.Internal);
         httpsys_free(uv_httpsys);
         uv_httpsys = NULL;
     }
@@ -453,21 +448,21 @@ void httpsys_read_request_body_callback(uv_async_t* handle, int status)
 
     // Process async completion
 
-    if (ERROR_HANDLE_EOF == uv_httpsys->uv_async.async_req.overlapped.Internal)
+    if (ERROR_HANDLE_EOF == (NTSTATUS)uv_httpsys->uv_async.async_req.overlapped.Internal)
     {
         // End of request body - notify JavaScript
 
         Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_END_REQUEST);
         httpsys_make_callback(event);
     }
-    else if (S_OK != uv_httpsys->uv_async.async_req.overlapped.Internal)
+    else if (S_OK != (NTSTATUS)uv_httpsys->uv_async.async_req.overlapped.Internal)
     {
         // Async completion failed - notify JavaScript
 
         httpsys_notify_error(
             uv_httpsys, 
             HTTPSYS_ERROR_READ_REQUEST_BODY, 
-            uv_httpsys->uv_async.async_req.overlapped.Internal);
+            (unsigned int)uv_httpsys->uv_async.async_req.overlapped.Internal);
         httpsys_free(uv_httpsys);
         uv_httpsys = NULL;
     }
@@ -479,7 +474,7 @@ void httpsys_read_request_body_callback(uv_async_t* handle, int status)
         // http://sambro.is-super-awesome.com/2011/03/03/creating-a-proper-buffer-in-a-node-c-addon/
 
         Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_REQUEST_BODY);
-        ULONG length = uv_httpsys->uv_async.async_req.overlapped.InternalHigh;
+        ULONG length = (ULONG)uv_httpsys->uv_async.async_req.overlapped.InternalHigh;
         node::Buffer* slowBuffer = node::Buffer::New(length);
         memcpy(node::Buffer::Data(slowBuffer), uv_httpsys->buffer, length);
         Handle<Value> args[] = { slowBuffer->handle_, Integer::New(length), Integer::New(0) };
@@ -646,7 +641,6 @@ Handle<Value> httpsys_listen(const Arguments& args)
     WCHAR requestQueueName[MAX_PATH + 1];
     HTTP_BINDING_INFO bindingInfo;
     uv_loop_t* loop;
-    Handle<Value> result;
     uv_httpsys_t* uv_httpsys = NULL;
     uv_httpsys_server_t* uv_httpsys_server = NULL;
 
@@ -792,11 +786,14 @@ Handle<Value> httpsys_listen(const Arguments& args)
     uv_prepare_start(&uv_httpsys_server->uv_prepare, httpsys_prepare_new_requests);
     uv_httpsys_server->readsToInitialize = pendingReadCount;
 
-    // TODO: uv_httpsys_server representation will need to be fixed on 64-bit systems.
+    // The result wraps the native pointer to the uv_httpsys_server_t structure.
+    // It also doubles as an event parameter to JavaScript callbacks scoped to the entire server.
 
-    result = Integer::NewFromUnsigned((uint32_t)uv_httpsys_server);
+    uv_httpsys_server->event = Persistent<Object>::New(httpsysObject->NewInstance());
+    uv_httpsys_server->event->SetPointerInInternalField(0, (void*)uv_httpsys_server);
+    uv_httpsys_server->event->Set(v8uv_httpsys_server, uv_httpsys_server->event); 
 
-    return handleScope.Close(result);
+    return uv_httpsys_server->event;
 
 Error:
 
@@ -835,7 +832,7 @@ Handle<Value> httpsys_stop_listen(const Arguments& args)
     HandleScope handleScope;
     HRESULT hr;
 
-    uv_httpsys_server_t* uv_httpsys_server = (uv_httpsys_server_t*)args[0]->Uint32Value();
+    uv_httpsys_server_t* uv_httpsys_server = (uv_httpsys_server_t*)Handle<Object>::Cast(args[0])->GetPointerFromInternalField(0);
     if (HTTP_NULL_ID != uv_httpsys_server->groupId)
     {
         CheckError(HttpCloseUrlGroup(uv_httpsys_server->groupId));
@@ -1016,14 +1013,14 @@ void httpsys_write_callback(uv_async_t* handle, int status)
 
     // Process async completion
 
-    if (S_OK != uv_httpsys->uv_async.async_req.overlapped.Internal)
+    if (S_OK != (NTSTATUS)uv_httpsys->uv_async.async_req.overlapped.Internal)
     {
         // Async completion failed - notify JavaScript
 
         httpsys_notify_error(
             uv_httpsys, 
             HTTPSYS_ERROR_WRITING, 
-            uv_httpsys->uv_async.async_req.overlapped.Internal);
+            (unsigned int)uv_httpsys->uv_async.async_req.overlapped.Internal);
         httpsys_free(uv_httpsys);
         uv_httpsys = NULL;
     }
@@ -1064,7 +1061,7 @@ HRESULT httpsys_initialize_body_chunks(Handle<Object> options, uv_httpsys_t* uv_
     {
         for (unsigned int i = 0; i < chunks->Length(); i++) {
             Handle<Object> buffer = chunks->Get(i)->ToObject();
-            uv_httpsys->chunk.FromMemory.BufferLength += node::Buffer::Length(buffer);
+            uv_httpsys->chunk.FromMemory.BufferLength += (ULONG)node::Buffer::Length(buffer);
         }
 
         ErrorIf(NULL == (uv_httpsys->chunk.FromMemory.pBuffer = 
@@ -1210,6 +1207,11 @@ void init(Handle<Object> target)
 
     bufferConstructor = Persistent<Function>::New(Handle<Function>::Cast(
         Context::GetCurrent()->Global()->Get(String::New("Buffer")))); 
+
+    // Create an object template of an object to roundtrip a native pointer to JavaScript
+
+    httpsysObject = Persistent<ObjectTemplate>::New(ObjectTemplate::New());
+    httpsysObject->SetInternalFieldCount(1);
 
     // Create exports
 
