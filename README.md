@@ -6,6 +6,8 @@ Compared to the built in HTTP stack in node.js it offers kernel mode output cach
 
 This is a very early version of the module. Not much testing or performance optimization had been done. The module had been developed against node.js 0.8.7 x86 (but should work against 0.8.x x86). The x64 version is not supported yet. Any and all feedback is welcome [here](https://github.com/tjanczuk/httpsys/issues/new).
 
+See early [performance comparison with the built-in HTTP stack](https://github.com/tjanczuk/httpsys/wiki).
+
 More documentation will come; here is how to get started:
 
 ```
