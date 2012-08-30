@@ -60,7 +60,6 @@ Let's assume the SHA1 Thumprint of the certificate is `EC2F8BD2 360C6118 0C0DA68
 ```
 netsh http add sslcert ipport=0.0.0.0:8080 certhash=EC2F8BD2360C61180C0DA68C2DC911EB6708B1E5 
       appid={00112233-4455-6677-8899-AABBCCDDEEFE}
-
 ```
 
 (line breaks added for readability only; note that you must remove spaces from the SHA1 Thumprint; the appid parameter is an arbitrary GUID).
