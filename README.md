@@ -2,13 +2,15 @@ httpsys - native HTTP stack for node.js on Windows
 ===
 
 The `httpsys` module is a native HTTP stack for node.js applications on Windows. It is based on HTTP.SYS. 
-Compared to the built in HTTP stack in node.js it offers kernel mode output caching, port sharing, and kernel mode SSL configuration. Once WebSocket support is added, it will only work starting from Windows 8. Cluster is supported. The module aspires to provide high level of API and behavior compatibility with the built in HTTP stack in node.js. 
+Compared to the built in HTTP stack in node.js it offers better performance, kernel mode output caching, port sharing, and kernel mode SSL configuration. WebSockets are currently not supported; once the support is added, it will only work starting from Windows 8. Cluster is supported. The module aspires to provide high level of API and behavior compatibility with the built in HTTP stack in node.js. 
 
-This is a very early version of the module. Not much testing or performance optimization had been done. The module had been developed against node.js 0.8.7 x86 (but should work against 0.8.x x86). The x64 version is not supported yet. Any and all feedback is welcome [here](https://github.com/tjanczuk/httpsys/issues/new).
+This is a very early version of the module. Not much testing or performance optimization had been done. The module had been developed against node.js 0.8.7 (but should work against 0.8.x). Both x86 and x64 architectures are supported. Any and all feedback is welcome [here](https://github.com/tjanczuk/httpsys/issues/new).
 
 See early [performance comparison with the built-in HTTP stack](https://github.com/tjanczuk/httpsys/wiki).
 
-More documentation will come; here is how to get started:
+## Getting started
+
+You must have node.js 0.8.x installed. Then:
 
 ```
 npm install httpsys
@@ -25,6 +27,8 @@ http.createServer(function (req, res) {
 }).listen(8080);
 ```
 
+## Port sharing
+
 To use port sharing, provide a full [URL prefix string](http://msdn.microsoft.com/en-us/library/windows/desktop/aa364698(v=vs.85\).aspx) in the call to `Server.listen`, e.g.:
 
 ```javascript
@@ -35,8 +39,93 @@ http.createServer(function (req, res) {
 }).listen('http://*:8080/foo/');
 ```
 
-At the same time, you can start another process that listens on a different URL prefix on the same port, e.g. `http://*:8080/bar/`. Each of the processes will only receive requests matching the URL prefix they registered for. 
+At the same time, you can start another node.exe process that listens on a different URL prefix on the same port, e.g. `http://*:8080/bar/`. Each of the processes will only receive requests matching the URL prefix they registered for. The processes may belong to different users. 
+
+## HTTPS
+
+Create a self-signed X.509 certificate with associated private key and place it in the LocalMachine\My certificate store:
+
+```
+makecert -sr LocalMachine -ss My -pe -n "CN=mydomain.com" -a sha256 -len 1024 -r
+```
+
+List the certificates in the LocalMachine\My certificate store, locate the one you just created (CN=mydomain.com), and take note of its SHA1 Thumbprint: 
+
+```
+certmgr -c -s -r LocalMachine My
+```
+
+Let's assume the SHA1 Thumprint of the certificate is `EC2F8BD2 360C6118 0C0DA68C 2DC911EB 6708B1E5`. Next, register this certificate to be used by HTTP.SYS for all connections made on the TCP port on which you intend to set up the HTTPS server, in this case port 8080:
+
+```
+netsh http add sslcert ipport=0.0.0.0:8080 certhash=EC2F8BD2360C61180C0DA68C2DC911EB6708B1E5 
+      appid={00112233-4455-6677-8899-AABBCCDDEEFE}
+
+```
+
+(line breaks added for readability only; note that you must remove spaces from the SHA1 Thumprint; the appid parameter is an arbitrary GUID).
+
+Verify the certificate is properly installed:
+
+```
+netsh http show sslcert ipport=0.0.0.0:8080
+```
+
+Finally, author your HTTPS server:
+
+```javascript
+var https = require('httpsys').https();
+var options = {};
+
+https.createServer(options, function (req, res) {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Hello, world!');
+}).listen(8080);
+```
+
+Note that the X.509 credentials had already been configured with HTTP.SYS, so there is no need to specify them through the `options` object passed to the `createServer`. If you do specify X.509 credentials there, they will be silently ignored. The `options` object is expected merely for API compatibility with the built-in node.js HTTPS stack. 
+
+Now, visit your endpoint by going to `https://localhost:8080`. The browser will display a warning given that the certificate is self-signed and therefore not trusted, but otherwise your server is fully functional. 
 
 To inspect or modify HTTP.SYS configuration underlying your server use the `netsh http` command in Windows. This allows you to set various timeout values as well as configure SSL certificates. 
+
+## HTTP.SYS output caching
+
+The HTTP.SYS output caching feature enables you to dramatically improve the throughput of your node.js HTTP[S] server if you are repeatedly serving responses that can be cached for even a short period (e.g. 1 second). The first time an HTTP request is made, HTTP.SYS caches the response generated by the node.js application in an efficient, in-memory, kernel mode cache. For all similar requests that arrive within the specified cache duration, HTTP.SYS then serves the response directly from the cache without invoking the node.js application. 
+
+By default HTTP.SYS output caching is disabled. To enable output caching for your application, set the `HTTPSYS_CACHE_DURATION` environment variable to the desired default cache duration in seconds, e.g. 
+
+```
+set HTTPSYS_CACHE_DURATION=1
+node server.js
+```
+
+There are no changes required in the code of your application, unless you want to override the default cache duration for a particular HTTP response: 
+
+```javascript
+var http = require('httpsys').http();
+
+http.createServer(function (req, res) {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.cacheDuration = 60; // cache this particular response for 60 seconds
+  res.end('Hello, world!');
+}).listen(8080);
+```
+
+Note that if you do not set the `HTTPSYS_CACHE_DURATION` environment variable at all, the `cacheDuration` property in code remains ineffective. If you want to enable output caching only for carefully chosen set of responses, set `HTTPSYS_CACHE_DURATION` to 0 (zero), and then use `cacheDuration` in code to change this default for selected responses. 
+
+You can inspect the state of the HTTP.SYS output cache using the `netsh http show cachestate` command. 
+
+## Other configuration options
+
+There are a few other aspects of the `httpsys` module behavior that are controlled with environment variables:
+
+* `HTTPSYS_CACHE_DURATION` - default lifetime of the HTTP response in the the HTTP.SYS output cache in seconds. If unset, the HTTP.SYS output caching feature is completely disabled. 
+* `HTTPSYS_BUFFER_SIZE` - the size of the memory buffer used for reading HTTP requests in bytes. The default is 4096. If you are expecting HTTP requests with headers that exceed this size (e.g. large cookies or authentication), you may need to increase this value to e.g. 16384.
+* `HTTPSYS_REQUEST_QUEUE_LENGTH` - the maximum number of HTTP requests that HTTP.SYS will allow to be queued up before responding with a 503 to new requests. This is helpful in addressing short-lived spikes in traffic. The default is 5000.
+* `HTTPSYS_PENDING_READ_COUNT` - the number of async read requests for new HTTP requests that `httpsys` will maintain at any given point in time. The default is 1. 
+* `HTTPSYS_NATIVE` - fully qualified file name of the native httpsys.node module to use; this is useful when working with custom builds of the `httpsys` module.
+
+## Feedback
 
 Any and all feedback is welcome [here](https://github.com/tjanczuk/httpsys/issues/new).
