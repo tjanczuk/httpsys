@@ -108,7 +108,7 @@ char* verbs[] = {
     "HEAD",
     "POST",
     "PUT",
-    "DETELE",
+    "DELETE",
     "TRACE",
     "CONNECT",
     "TRACK",
