@@ -27,6 +27,7 @@ using namespace v8;
         if (S_OK != tmp_hr)       \
         {                         \
             hr = tmp_hr;          \
+            SetLastFromCheckError(hr, __FILE__, __LINE__); \
             goto Error;           \
         }                         \
     }
