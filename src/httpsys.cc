@@ -125,12 +125,21 @@ char* verbs[] = {
 // Processing common to all callbacks from HTTP.SYS:
 // - map the uv_async_t handle to uv_httpsys_t
 // - decrement event loop reference count to indicate completion of async operation
+#if UV_VERSION_MAJOR==0 && UV_VERSION_MINOR<8
+#define HTTPSYS_CALLBACK_PREAMBLE \
+    HandleScope handleScope; \
+    uv_httpsys_t* uv_httpsys = CONTAINING_RECORD(handle, uv_httpsys_t, uv_async); \
+    uv_unref(uv_default_loop()); \
+    uv_httpsys->uv_async.loop = NULL; \
+    PHTTP_REQUEST request = (PHTTP_REQUEST)uv_httpsys->buffer; 
+#else
 #define HTTPSYS_CALLBACK_PREAMBLE \
     HandleScope handleScope; \
     uv_httpsys_t* uv_httpsys = CONTAINING_RECORD(handle, uv_httpsys_t, uv_async); \
     uv_unref((uv_handle_t*)&uv_httpsys->uv_async); \
     uv_httpsys->uv_async.loop = NULL; \
     PHTTP_REQUEST request = (PHTTP_REQUEST)uv_httpsys->buffer; 
+#endif 
 
 // Processing common to most exported methods:
 // - declare handle scope and hr
@@ -416,7 +425,12 @@ void httpsys_free(uv_httpsys_t* uv_httpsys)
 
         if (NULL != uv_httpsys->uv_async.loop)
         {
+#if UV_VERSION_MAJOR==0 && UV_VERSION_MINOR<8
+            uv_unref(uv_default_loop());
+#else
             uv_unref((uv_handle_t*)&uv_httpsys->uv_async);
+#endif              
+            // REMOVE uv_unref((uv_handle_t*)&uv_httpsys->uv_async);
         }
 
         if (NULL != uv_httpsys->buffer)
@@ -549,8 +563,13 @@ HRESULT httpsys_initiate_read_request_body(uv_httpsys_t* uv_httpsys)
     {
         // End of request body, decrement libuv loop ref count since no async completion will follow
         // and generate JavaScript event
-        
+
+#if UV_VERSION_MAJOR==0 && UV_VERSION_MINOR<8
+        uv_unref(uv_default_loop());
+#else
         uv_unref((uv_handle_t*)&uv_httpsys->uv_async);
+#endif           
+        // REMOVE uv_unref((uv_handle_t*)&uv_httpsys->uv_async);
         uv_httpsys->uv_async.loop = NULL;
         Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_END_REQUEST);
         httpsys_make_callback(event);

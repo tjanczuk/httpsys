@@ -17,3 +17,14 @@ npm-debug.log
 build
 test.js
 log.xml
+
+bin/
+obj/
+*.user
+*.suo
+packages/*
+_ReSharper*
+
+node.exe
+httpsys.node
+msvcr110.dll
