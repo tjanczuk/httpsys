@@ -22,5 +22,9 @@
   },
   "bugs" : {
     "url" : "http://github.com/tjanczuk/httpsys/issues"
-  }
+  },
+  "scripts": {
+    "install": "tools\\install.bat",
+    "test": "test\\test.bat"
+  }  
 }

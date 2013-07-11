@@ -1,4 +1,4 @@
-var http = require('httpsys').http();
+var http = require('../lib/httpsys').http();
 var cluster = require('cluster');
 var numCPUs = require('os').cpus().length;
 

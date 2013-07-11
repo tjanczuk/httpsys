@@ -23,7 +23,12 @@ describe('hello, world', function () {
 
         server.listen(port);
 
-        var request = http.get('http://localhost:' + port, function (res) {
+        var request = http.request({
+            hostname: 'localhost',
+            port: port,
+            path: '/',
+            method: 'GET'
+        }, function (res) {
             assert.equal(res.statusCode, 200);
             assert.equal(res.headers['content-type'], 'text/plain');
             var body = '';
@@ -35,6 +40,7 @@ describe('hello, world', function () {
         });
 
         request.on('error', assert.ifError);
+        request.end();
     });
 
 });

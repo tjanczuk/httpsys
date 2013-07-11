@@ -1,4 +1,4 @@
-var https = require('httpsys').https();
+var https = require('../lib/httpsys').https();
 var options = {};
 
 https.createServer(options, function (req, res) {

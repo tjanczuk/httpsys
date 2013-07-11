@@ -1,7 +1,7 @@
 // set HTTPSYS_CACHE_DURATION=15
 // netsh http show cachestate
 
-var http = require('httpsys').http();
+var http = require('../lib/httpsys').http();
 
 http.createServer(function (req, res) {
   console.log('Request for ' + req.url);
