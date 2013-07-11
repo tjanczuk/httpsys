@@ -36,7 +36,7 @@ describe('hello, world', function () {
             res.on('end', function () {
                 assert.equal(body, 'Hello, world!');
                 done();
-            })
+            });
         });
 
         request.on('error', assert.ifError);
