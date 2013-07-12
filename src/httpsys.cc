@@ -430,7 +430,6 @@ void httpsys_free(uv_httpsys_t* uv_httpsys)
 #else
             uv_unref((uv_handle_t*)&uv_httpsys->uv_async);
 #endif              
-            // REMOVE uv_unref((uv_handle_t*)&uv_httpsys->uv_async);
         }
 
         if (NULL != uv_httpsys->buffer)
@@ -525,7 +524,7 @@ HRESULT httpsys_read_request_body_loop(uv_httpsys_t* uv_httpsys)
     HRESULT hr;
 
     // Continue reading the request body synchronously until EOF, and error, 
-    // request is paused or async oompletion is expected.
+    // request is paused or async completion is expected.
     while (NULL != uv_httpsys && NO_ERROR == (hr = httpsys_initiate_read_request_body(uv_httpsys)))
     {
         // Use the "status" parameter to the callback as a mechanism to return data
@@ -569,7 +568,6 @@ HRESULT httpsys_initiate_read_request_body(uv_httpsys_t* uv_httpsys)
 #else
         uv_unref((uv_handle_t*)&uv_httpsys->uv_async);
 #endif           
-        // REMOVE uv_unref((uv_handle_t*)&uv_httpsys->uv_async);
         uv_httpsys->uv_async.loop = NULL;
         Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_END_REQUEST);
         httpsys_make_callback(event);
