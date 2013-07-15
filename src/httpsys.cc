@@ -52,6 +52,7 @@ Handle<String> v8id;
 Handle<String> v8value;
 Handle<String> v8cacheDuration;
 Handle<String> v8disconnect;
+Handle<String> v8noDelay;
 
 // Maps HTTP_HEADER_ID enum to v8 string
 // http://msdn.microsoft.com/en-us/library/windows/desktop/aa364526(v=vs.85).aspx
@@ -210,6 +211,7 @@ Handle<Value> httpsys_notify_error(uv_httpsys_t* uv_httpsys, uv_httpsys_event_ty
 void httpsys_new_request_callback(uv_async_t* handle, int status)
 {
     HTTPSYS_CALLBACK_PREAMBLE
+    BOOL isUpgrade = FALSE;
 
     // Copy the request ID assigned to the request by HTTP.SYS to uv_httpsys 
     // to start subsequent async operations related to this request
@@ -272,6 +274,12 @@ void httpsys_new_request_callback(uv_async_t* handle, int status)
         {
             if (request->Headers.KnownHeaders[i].RawValueLength > 0)
             {
+                if (7 == i) {
+                    // This is an upgrade header indicatting a potential upgrade
+
+                    isUpgrade = TRUE;
+                }
+
                 headers->Set(v8httpRequestHeaderNames[i], String::New(
                     request->Headers.KnownHeaders[i].pRawValue,
                     request->Headers.KnownHeaders[i].RawValueLength));
@@ -282,7 +290,14 @@ void httpsys_new_request_callback(uv_async_t* handle, int status)
 
         for (int i = 0; i < request->Headers.UnknownHeaderCount; i++)
         {
-            // TODO: lowercase unknown header names
+            // Node expects header names in lowercase.
+            // In-place convert unknown header names to lowercase. 
+
+            for (int k = 0; k < request->Headers.pUnknownHeaders[i].NameLength; k++) {
+                ((PSTR)request->Headers.pUnknownHeaders[i].pName)[k] = 
+                    tolower(request->Headers.pUnknownHeaders[i].pName[k]);
+            }
+
             headers->Set(
                 String::New(
                     request->Headers.pUnknownHeaders[i].pName,
@@ -312,9 +327,10 @@ void httpsys_new_request_callback(uv_async_t* handle, int status)
             // Otherwise request had been paused and will be resumed asynchronously from JavaScript
             // with a call to httpsys_resume.
 
-            if (0 == (request->Flags & HTTP_REQUEST_FLAG_MORE_ENTITY_BODY_EXISTS))
+            if (0 == (request->Flags & HTTP_REQUEST_FLAG_MORE_ENTITY_BODY_EXISTS) && !isUpgrade)
             {
                 // This is a body-less request. Notify JavaScript the request is finished.
+                // Note that for HTTP upgrade paths this flag appears not to be set.
 
                 Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_END_REQUEST);
                 httpsys_make_callback(event);
@@ -386,6 +402,11 @@ void httpsys_free(uv_httpsys_t* uv_httpsys)
 {
     if (NULL != uv_httpsys) 
     {
+        // For upgraded requests, two uv_httpsys instances exist: one for request and the other for response.
+        // The last one to close cleans up shared resources as well as disposes of the peer. 
+
+        uv_httpsys->closed = TRUE;
+
         httpsys_free_chunks(uv_httpsys);
 
         if (!uv_httpsys->event.IsEmpty())
@@ -442,8 +463,18 @@ void httpsys_free(uv_httpsys_t* uv_httpsys)
             uv_httpsys->buffer = NULL;
         }
 
-        free(uv_httpsys);
-        uv_httpsys = NULL;
+        if (NULL != uv_httpsys->uv_httpsys_peer) {
+            if (uv_httpsys->uv_httpsys_peer->closed) {
+                free(uv_httpsys->uv_httpsys_peer);
+                uv_httpsys->uv_httpsys_peer = NULL;
+                free(uv_httpsys);
+                uv_httpsys = NULL;
+            }
+        }
+        else {
+            free(uv_httpsys);
+            uv_httpsys = NULL;            
+        }
     }
 }
 
@@ -907,7 +938,48 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
     Handle<Array> knownHeaders;
     Handle<Object> knownHeader;
     Handle<Value> cacheDuration;
-    ULONG flags;
+    ULONG flags = 0;
+    unsigned int statusCode;
+    uv_httpsys_t* uv_httpsys_req = NULL;
+
+    // Enable NAGLE if requested
+
+    if (!options->Get(v8noDelay)->BooleanValue()) {
+        flags |= HTTP_SEND_RESPONSE_FLAG_ENABLE_NAGLING;
+    }
+
+    // Get response status code
+
+    statusCode = options->Get(v8statusCode)->Uint32Value();
+
+    // If this is an accepted upgrade response, create another uv_httpsys intance 
+    // to allow processing request and response concurrently. Use the new uv_httpsys instance 
+    // for writing of the response, inluding sending back the HTTP response headers. The old 
+    // uv_httpsys instance will continue to be used for reading of the request.
+
+    if (101 == statusCode) {
+        // Instruct HTTP.SYS to treat subsequent reads and writes of the HTTP request and response as
+        // opaque. This allows higher level protocols like WebSockets to implement custom framing.
+
+        flags |= HTTP_SEND_RESPONSE_FLAG_OPAQUE;
+        
+        // Create an initialize uv_httpsys for writing of the response
+
+        ErrorIf(NULL == (uv_httpsys->uv_httpsys_peer = (uv_httpsys_t*)malloc(sizeof(uv_httpsys_t))),
+            ERROR_NOT_ENOUGH_MEMORY);
+        RtlZeroMemory(uv_httpsys->uv_httpsys_peer, sizeof(uv_httpsys_t));
+        uv_httpsys->uv_httpsys_peer->uv_httpsys_server = uv_httpsys->uv_httpsys_server;
+        uv_httpsys->uv_httpsys_peer->requestId = uv_httpsys->requestId;
+        uv_httpsys->uv_httpsys_peer->event = Persistent<Object>::New(uv_httpsys->event);
+        uv_httpsys->uv_httpsys_peer->uv_httpsys_peer = uv_httpsys;
+
+        // Switch to using the newly created uv_httpsys for the rest of this function
+
+        uv_httpsys_req = uv_httpsys;
+        uv_httpsys = uv_httpsys->uv_httpsys_peer;
+    }
+
+    uv_httpsys->response.StatusCode = statusCode;
 
     // Initialize libuv handle representing this async operation
 
@@ -923,10 +995,11 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
 
     uv_httpsys->disconnect = options->Get(v8disconnect)->BooleanValue();
     if (uv_httpsys->disconnect) {
+        flags |= HTTP_SEND_RESPONSE_FLAG_DISCONNECT;
         hr = HttpSendHttpResponse(
             uv_httpsys->uv_httpsys_server->requestQueue,
             uv_httpsys->requestId,
-            HTTP_SEND_RESPONSE_FLAG_DISCONNECT,
+            flags,
             &uv_httpsys->response,
             NULL,
             NULL,
@@ -1026,12 +1099,6 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
 
     // TOOD: support response trailers
 
-    // If the HTTP upgrade was accepted, set flag to take over raw network connection
-
-    if (101 == uv_httpsys->response.StatusCode) {
-        flags |= HTTP_SEND_RESPONSE_FLAG_OPAQUE;
-    }
-
     // Initiate async send of the HTTP response headers and optional body
 
     hr = HttpSendHttpResponse(
@@ -1062,6 +1129,8 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
 
 Error:
 
+    httpsys_free(uv_httpsys_req);
+    uv_httpsys_req = NULL;
     httpsys_free(uv_httpsys);
     uv_httpsys = NULL;
 
@@ -1154,12 +1223,11 @@ HRESULT httpsys_initialize_body_chunks(Handle<Object> options, uv_httpsys_t* uv_
 
     if (options->Get(v8isLastChunk)->BooleanValue())
     {
-        *flags = 0;
         uv_httpsys->lastChunkSent = 1;
     }
     else
     {
-        *flags = HTTP_SEND_RESPONSE_FLAG_MORE_DATA;
+        *flags |= HTTP_SEND_RESPONSE_FLAG_MORE_DATA;
     }
 
     return S_OK;
@@ -1175,7 +1243,19 @@ Handle<Value> httpsys_write_body(const Arguments& args)
 {
     HTTPSYS_EXPORT_PREAMBLE;
     Handle<Object> options = args[0]->ToObject();
-    ULONG flags;
+    ULONG flags = 0;
+
+    // Enable NAGLE if requested
+
+    if (!options->Get(v8noDelay)->BooleanValue()) {
+        flags |= HTTP_SEND_RESPONSE_FLAG_ENABLE_NAGLING;
+    }
+
+    // If this is an upgraded HTTP request, use the peer uv_httpsys for the write operation
+
+    if (uv_httpsys->uv_httpsys_peer) {
+        uv_httpsys = uv_httpsys->uv_httpsys_peer;
+    }
 
     // Initialize libuv handle representing this async operation
 
@@ -1271,6 +1351,7 @@ void init(Handle<Object> target)
     v8value = Persistent<String>::New(String::NewSymbol("value"));
     v8cacheDuration = Persistent<String>::New(String::NewSymbol("cacheDuration"));
     v8disconnect = Persistent<String>::New(String::NewSymbol("disconnect"));
+    v8noDelay = Persistent<String>::New(String::NewSymbol("noDelay"));
 
     // Capture the constructor function of JavaScript Buffer implementation
 
