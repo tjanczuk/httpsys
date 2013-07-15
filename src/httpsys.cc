@@ -48,6 +48,7 @@ Handle<String> v8chunks;
 Handle<String> v8id;
 Handle<String> v8value;
 Handle<String> v8cacheDuration;
+Handle<String> v8disconnect;
 
 // Maps HTTP_HEADER_ID enum to v8 string
 // http://msdn.microsoft.com/en-us/library/windows/desktop/aa364526(v=vs.85).aspx
@@ -910,9 +911,43 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
     RtlZeroMemory(&uv_httpsys->uv_async, sizeof(uv_async_t));
     CheckError(uv_async_init(uv_default_loop(), &uv_httpsys->uv_async, httpsys_write_callback));
 
-    // Set response status code and reason
+    // Set response status code
 
     uv_httpsys->response.StatusCode = options->Get(v8statusCode)->Uint32Value();
+
+    // If the request is to be disconnected, it indicates a rejected HTTP upgrade request. 
+    // In that case the request is closed and native resources deallocated. 
+
+    uv_httpsys->disconnect = options->Get(v8disconnect)->BooleanValue();
+    if (uv_httpsys->disconnect) {
+        hr = HttpSendHttpResponse(
+            uv_httpsys->uv_httpsys_server->requestQueue,
+            uv_httpsys->requestId,
+            HTTP_SEND_RESPONSE_FLAG_DISCONNECT,
+            &uv_httpsys->response,
+            NULL,
+            NULL,
+            NULL,
+            0,
+            &uv_httpsys->uv_async.async_req.overlapped,
+            NULL);
+
+        if (NO_ERROR == hr)
+        {
+            // Synchronous completion. 
+
+            httpsys_write_callback(&uv_httpsys->uv_async, 1);
+        }
+        else 
+        {
+            ErrorIf(ERROR_IO_PENDING != hr, hr);
+        }     
+
+        return handleScope.Close(Boolean::New(ERROR_IO_PENDING == hr));   
+    }
+
+    // Set reason
+    
     ErrorIf(NULL == (uv_httpsys->response.pReason = (PCSTR)malloc(reason.length())),
         ERROR_NOT_ENOUGH_MEMORY);
     uv_httpsys->response.ReasonLength = reason.length();
@@ -1030,7 +1065,14 @@ void httpsys_write_callback(uv_async_t* handle, int status)
 
     // Process async completion
 
-    if (S_OK != (NTSTATUS)uv_httpsys->uv_async.async_req.overlapped.Internal)
+    if (uv_httpsys->disconnect) {
+        // This was a best-effort termination of an unaccepted HTTP upgrade request. 
+        // Free up native resources regardless of the outcome of the async operation. 
+
+        httpsys_free(uv_httpsys);
+        uv_httpsys = NULL;
+    }
+    else if (S_OK != (NTSTATUS)uv_httpsys->uv_async.async_req.overlapped.Internal)
     {
         // Async completion failed - notify JavaScript
 
@@ -1219,6 +1261,7 @@ void init(Handle<Object> target)
     v8id = Persistent<String>::New(String::NewSymbol("id"));
     v8value = Persistent<String>::New(String::NewSymbol("value"));
     v8cacheDuration = Persistent<String>::New(String::NewSymbol("cacheDuration"));
+    v8disconnect = Persistent<String>::New(String::NewSymbol("disconnect"));
 
     // Capture the constructor function of JavaScript Buffer implementation
 

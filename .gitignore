@@ -18,6 +18,7 @@ build
 test.js
 log.xml
 
+adhoc/
 bin/
 obj/
 *.user

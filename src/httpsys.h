@@ -52,6 +52,7 @@ typedef struct uv_httpsys_s {
     unsigned int bufferSize;
     HTTP_DATA_CHUNK chunk;
     int lastChunkSent;
+    BOOL disconnect;
     uv_httpsys_server_t* uv_httpsys_server;
     Persistent<Object> event;
 } uv_httpsys_t;

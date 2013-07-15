@@ -13,7 +13,8 @@
   "licenses": [ { "type": "Apache", "url": "http://www.apache.org/licenses/LICENSE-2.0" } ],
   "os": [ "win32" ],
   "devDependencies": {
-    "mocha": "1.8.1"
+    "mocha": "1.8.1",
+    "ws": "0.4.27"
   },
   "homepage": "https://github.com/tjanczuk/httpsys",
   "repository": {
