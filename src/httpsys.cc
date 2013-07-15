@@ -2,11 +2,14 @@
 
 /*
 Design notes:
-- Only one async operation per HTTP request should be outstanding at a time. JavaScript 
+- Only one async operation per regular HTTP request should be outstanding at a time. JavaScript 
   must ensure not to initiate another async operation (e.g. httpsys_write_body) before 
   the ongoing one completes. This implies JavaScript must manage a state machine around a request
   and buffer certain calls from user code (e.g. writing multiple chunks of response body before
   previous write completes)
+- Only up to two async operations per upgraded HTTP request should be outstanding at the time: one for reading
+  of the requst, and one for writing of the response. The native module supports separate event pumps for 
+  the request and response of upgraded request. 
 - Native resources are released by native code if async operation completes with error.
 - If JavaScript encounters an error it must explicitly request native resources to be released.
   In particular there is no exception contract between JavaScript callback and native code.

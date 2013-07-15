@@ -54,6 +54,7 @@ typedef struct uv_httpsys_s {
     int lastChunkSent;
     BOOL disconnect;
     uv_httpsys_server_t* uv_httpsys_server;
+    struct uv_httpsys_s* uv_httpsys_peer;
     Persistent<Object> event;
 } uv_httpsys_t;
 
