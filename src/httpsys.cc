@@ -1023,6 +1023,12 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
 
     // TOOD: support response trailers
 
+    // If the HTTP upgrade was accepted, set flag to take over raw network connection
+
+    if (101 == uv_httpsys->response.StatusCode) {
+        flags |= HTTP_SEND_RESPONSE_FLAG_OPAQUE;
+    }
+
     // Initiate async send of the HTTP response headers and optional body
 
     hr = HttpSendHttpResponse(
