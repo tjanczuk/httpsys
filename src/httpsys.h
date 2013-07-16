@@ -53,6 +53,7 @@ typedef struct uv_httpsys_s {
     HTTP_DATA_CHUNK chunk;
     int lastChunkSent;
     BOOL disconnect;
+    BOOL disconnectProcessed;
     BOOL closed;
     uv_httpsys_server_t* uv_httpsys_server;
     struct uv_httpsys_s* uv_httpsys_peer;
@@ -80,9 +81,10 @@ Handle<Object> httpsys_create_event(uv_httpsys_server_t* uv_httpsys_server, int 
 Handle<Value> httpsys_notify_error(uv_httpsys_t* uv_httpsys, uv_httpsys_event_type errorType, unsigned int code);
 Handle<Value> httpsys_notify_error(uv_httpsys_server_t* uv_httpsys_server, uv_httpsys_event_type errorType, unsigned int code);
 void httpsys_free_chunks(uv_httpsys_t* uv_httpsys);
-void httpsys_free(uv_httpsys_t* uv_httpsys);
+void httpsys_free(uv_httpsys_t* uv_httpsys, BOOL error);
 Handle<Value> httpsys_make_callback(Handle<Value> options);
 HRESULT httpsys_initialize_body_chunks(Handle<Object> options, uv_httpsys_t* uv_httpsys, ULONG* flags);
+BOOL httpsys_async_pending(uv_httpsys_t* uv_httpsys);
 
 // HTTP processing state machine actions and events
 
