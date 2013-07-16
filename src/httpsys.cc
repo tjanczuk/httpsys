@@ -1320,6 +1320,10 @@ HRESULT httpsys_initialize_body_chunks(Handle<Object> options, uv_httpsys_t* uv_
     if (options->Get(v8isLastChunk)->BooleanValue())
     {
         uv_httpsys->lastChunkSent = 1;
+        if (uv_httpsys->uv_httpsys_peer) {
+            // For upgraded requests, the connection must be manually terminated.
+            *flags |= HTTP_SEND_RESPONSE_FLAG_DISCONNECT;
+        }
     }
     else
     {
