@@ -1040,10 +1040,6 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
 
     uv_httpsys->response.StatusCode = statusCode;
 
-    // Set response status code
-
-    uv_httpsys->response.StatusCode = options->Get(v8statusCode)->Uint32Value();
-
     // If the request is to be disconnected, it indicates a rejected HTTP upgrade request. 
     // In that case the request is closed and native resources deallocated. 
 
