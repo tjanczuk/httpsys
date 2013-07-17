@@ -21,6 +21,10 @@ describe('socket.io', function () {
         testTransport('websocket', done);
     });
 
+    it('works with xhr-polling transport', function (done) {
+        testTransport('xhr-polling', done);
+    });    
+
     function testTransport(transport, done) {
         server = http.createServer(function (req, res) {
             throw new Error('Regular HTTP request detected.');
