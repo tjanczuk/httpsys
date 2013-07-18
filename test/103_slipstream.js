@@ -1,10 +1,12 @@
-var http = require('../lib/httpsys.js').http()
+require('../lib/httpsys').slipstream();
+
+var http = require('http')
     , assert = require('assert');
 
-var port = process.env.PORT || 3102;
+var port = process.env.PORT || 3103;
 var server;
 
-describe('hello, world', function () {
+describe('slipstream', function () {
 
     afterEach(function (done) {
         if (server) {
@@ -15,7 +17,11 @@ describe('hello, world', function () {
         done();
     });
 
-    it('works', function (done) {
+    it('works', function () {
+        assert.equal(typeof http.httpsys_version, 'string');
+    });
+
+    it('hello, world works', function (done) {
         server = http.createServer(function (req, res) {
             res.writeHead(200, { 'Content-Type': 'text/plain' });
             res.end('Hello, world!');

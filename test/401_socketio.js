@@ -3,7 +3,7 @@ var http = require('../lib/httpsys.js').http()
     , socketio_client = require('socket.io-client')
     , assert = require('assert');
 
-var port = process.env.PORT || 3002;
+var port = process.env.PORT || 3401;
 var server;
 
 describe('socket.io', function () {

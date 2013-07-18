@@ -3,7 +3,7 @@ var http = require('../lib/httpsys.js').http()
     , WebSocketServer = require('ws').Server
     , assert = require('assert');
 
-var port = process.env.PORT || 3001;
+var port = process.env.PORT || 3201;
 var server;
 
 describe('einaros/ws', function () {
