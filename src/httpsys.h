@@ -33,19 +33,23 @@ using namespace v8;
 
 // Wrapper of the uv_prepare_t associated with an active server
 
+struct uv_httpsys_s;
+
 typedef struct uv_httpsys_server_s {
     uv_prepare_t uv_prepare;
     HTTP_SERVER_SESSION_ID sessionId;
     HTTP_URL_GROUP_ID groupId;
     HANDLE requestQueue;
     unsigned int readsToInitialize;
+    int refCount;
+    BOOL closing;
     Persistent<Object> event;
 } uv_httpsys_server_t;
 
 // Wrapper of the uv_async_t with HTTP.SYS specific data
 
 typedef struct uv_httpsys_s {
-    uv_async_t uv_async;
+    uv_async_t* uv_async;
     HTTP_REQUEST_ID requestId;
     HTTP_RESPONSE response;
     void* buffer;
@@ -71,7 +75,8 @@ typedef enum {
     HTTPSYS_ERROR_READ_REQUEST_BODY,
     HTTPSYS_REQUEST_BODY,
     HTTPSYS_WRITTEN,
-    HTTPSYS_ERROR_WRITING
+    HTTPSYS_ERROR_WRITING,
+    HTTPSYS_SERVER_CLOSED
 } uv_httpsys_event_type;
 
 // Utility functions
@@ -84,7 +89,9 @@ void httpsys_free_chunks(uv_httpsys_t* uv_httpsys);
 void httpsys_free(uv_httpsys_t* uv_httpsys, BOOL error);
 Handle<Value> httpsys_make_callback(Handle<Value> options);
 HRESULT httpsys_initialize_body_chunks(Handle<Object> options, uv_httpsys_t* uv_httpsys, ULONG* flags);
-BOOL httpsys_async_pending(uv_httpsys_t* uv_httpsys);
+HRESULT httpsys_uv_httpsys_init(uv_httpsys_t* uv_httpsys, uv_async_cb callback);
+HRESULT httpsys_uv_httpsys_close(uv_httpsys_t* uv_httpsys);
+void httpsys_close_uv_async_cb(uv_handle_t* uv_handle);
 
 // HTTP processing state machine actions and events
 

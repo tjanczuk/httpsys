@@ -24,7 +24,6 @@ Design notes:
 
 using namespace v8;
 
-int initialized;
 int initialBufferSize;
 ULONG requestQueueLength;
 int pendingReadCount;
@@ -133,22 +132,14 @@ char* verbs[] = {
 
 // Processing common to all callbacks from HTTP.SYS:
 // - map the uv_async_t handle to uv_httpsys_t
-// - decrement event loop reference count to indicate completion of async operation
-#if UV_VERSION_MAJOR==0 && UV_VERSION_MINOR<8
+// - clean up uv_async indicate completion of async operation
 #define HTTPSYS_CALLBACK_PREAMBLE \
     HandleScope handleScope; \
-    uv_httpsys_t* uv_httpsys = CONTAINING_RECORD(handle, uv_httpsys_t, uv_async); \
-    uv_unref(uv_default_loop()); \
-    uv_httpsys->uv_async.loop = NULL; \
+    uv_httpsys_t* uv_httpsys = (uv_httpsys_t*)handle->data; \
+    NTSTATUS overlappedResult = (NTSTATUS)uv_httpsys->uv_async->async_req.overlapped.Internal; \
+    ULONG overlappedLength = (ULONG)uv_httpsys->uv_async->async_req.overlapped.InternalHigh; \
+    httpsys_uv_httpsys_close(uv_httpsys); \
     PHTTP_REQUEST request = (PHTTP_REQUEST)uv_httpsys->buffer; 
-#else
-#define HTTPSYS_CALLBACK_PREAMBLE \
-    HandleScope handleScope; \
-    uv_httpsys_t* uv_httpsys = CONTAINING_RECORD(handle, uv_httpsys_t, uv_async); \
-    uv_unref((uv_handle_t*)&uv_httpsys->uv_async); \
-    uv_httpsys->uv_async.loop = NULL; \
-    PHTTP_REQUEST request = (PHTTP_REQUEST)uv_httpsys->buffer; 
-#endif 
 
 // Processing common to most exported methods:
 // - declare handle scope and hr
@@ -158,12 +149,43 @@ char* verbs[] = {
     HRESULT hr; \
     uv_httpsys_t* uv_httpsys = (uv_httpsys_t*)Handle<Object>::Cast(args[0])->GetPointerFromInternalField(0);
 
-// Determines if there is a pending async operation against HTTP.SYS associated with the
-// uv_httpsys structure. This is done by checking if the uv_async is associated with a uv_loop.
-// The uv_async.loop is set every time a new async operation is started and cleared every time it completes.
-BOOL httpsys_async_pending(uv_httpsys_t* uv_httpsys)
+HRESULT httpsys_uv_httpsys_init(uv_httpsys_t* uv_httpsys, uv_async_cb callback)
 {
-    return NULL != uv_httpsys->uv_async.loop;
+    HRESULT hr;
+
+    ErrorIf(NULL != uv_httpsys->uv_async, E_FAIL);
+    ErrorIf(NULL == (uv_httpsys->uv_async = new uv_async_t), ERROR_NOT_ENOUGH_MEMORY);
+    RtlZeroMemory(uv_httpsys->uv_async, sizeof(uv_async_t));
+    CheckError(uv_async_init(uv_default_loop(), uv_httpsys->uv_async, callback));
+    uv_httpsys->uv_async->data = uv_httpsys;
+    uv_httpsys->uv_httpsys_server->refCount++;
+
+    return S_OK;
+
+Error:
+
+    return hr;
+}
+
+void httpsys_close_uv_async_cb(uv_handle_t* uv_handle)
+{
+    delete uv_handle;
+}
+
+HRESULT httpsys_uv_httpsys_close(uv_httpsys_t* uv_httpsys)
+{
+    HRESULT hr;
+
+    ErrorIf(NULL == uv_httpsys->uv_async, E_FAIL);
+    uv_close((uv_handle_t*)uv_httpsys->uv_async, httpsys_close_uv_async_cb);
+    uv_httpsys->uv_async = NULL;
+    uv_httpsys->uv_httpsys_server->refCount--;
+
+    return S_OK;
+
+Error:
+
+    return hr;
 }
 
 Handle<Value> httpsys_make_callback(Handle<Value> options)
@@ -245,13 +267,15 @@ void httpsys_new_request_callback(uv_async_t* handle, int status)
 
     // Process async completion
 
-    if (S_OK != (NTSTATUS)uv_httpsys->uv_async.async_req.overlapped.Internal)
+    if (S_OK != overlappedResult)
     {
         // Async completion failed - notify JavaScript
+		
         httpsys_notify_error(
             uv_httpsys, 
             HTTPSYS_ERROR_NEW_REQUEST,
-            (unsigned int)uv_httpsys->uv_async.async_req.overlapped.Internal);
+            (unsigned int)overlappedResult);
+		
         httpsys_free(uv_httpsys, TRUE);
         uv_httpsys = NULL;
     }
@@ -363,8 +387,7 @@ HRESULT httpsys_initiate_new_request(uv_httpsys_t* uv_httpsys)
 
     // Create libuv async handle and initialize it
 
-    RtlZeroMemory(&uv_httpsys->uv_async, sizeof(uv_async_t));
-    CheckError(uv_async_init(uv_default_loop(), &uv_httpsys->uv_async, httpsys_new_request_callback));
+    CheckError(httpsys_uv_httpsys_init(uv_httpsys, httpsys_new_request_callback));
 
     // Allocate initial buffer to receice the HTTP request
 
@@ -382,13 +405,13 @@ HRESULT httpsys_initiate_new_request(uv_httpsys_t* uv_httpsys)
         (PHTTP_REQUEST)uv_httpsys->buffer,
         uv_httpsys->bufferSize,
         NULL,
-        &uv_httpsys->uv_async.async_req.overlapped);
+        &uv_httpsys->uv_async->async_req.overlapped);
 
     if (NO_ERROR == hr)
     {
         // Synchronous completion.  
 
-        httpsys_new_request_callback(&uv_httpsys->uv_async, 0);
+        httpsys_new_request_callback(uv_httpsys->uv_async, 0);
     }
     else 
     {
@@ -461,19 +484,14 @@ void httpsys_free(uv_httpsys_t* uv_httpsys, BOOL error)
 
         RtlZeroMemory(&uv_httpsys->response, sizeof (uv_httpsys->response));
 
-        if (httpsys_async_pending(uv_httpsys))
+        if (uv_httpsys->uv_async)
         {
-#if UV_VERSION_MAJOR==0 && UV_VERSION_MINOR<8
-            uv_unref(uv_default_loop());
-#else
-            uv_unref((uv_handle_t*)&uv_httpsys->uv_async);
-#endif              
-            uv_httpsys->uv_async.loop = NULL;
+            httpsys_uv_httpsys_close(uv_httpsys);
         }
 
         if (NULL != uv_httpsys->buffer)
         {
-            free(uv_httpsys->buffer);
+           free(uv_httpsys->buffer);
             uv_httpsys->buffer = NULL;
         }
 
@@ -491,13 +509,13 @@ void httpsys_free(uv_httpsys_t* uv_httpsys, BOOL error)
 
             if (uv_httpsys->uv_httpsys_peer->closed) {
                 // #1
-                free(uv_httpsys->uv_httpsys_peer);
+                delete uv_httpsys->uv_httpsys_peer;
                 uv_httpsys->uv_httpsys_peer = NULL;
-                free(uv_httpsys);
+                delete uv_httpsys;
                 uv_httpsys = NULL;
             }
             else if (error) {
-                if (httpsys_async_pending(uv_httpsys->uv_httpsys_peer)) {
+                if (uv_httpsys->uv_httpsys_peer->uv_async) {
                     // #2.1
                     uv_httpsys->uv_httpsys_peer->disconnect = TRUE;
                 }
@@ -511,7 +529,7 @@ void httpsys_free(uv_httpsys_t* uv_httpsys, BOOL error)
 
             // The regular HTTP request scenario - single uv_httpsys instance. 
 
-            free(uv_httpsys);
+            delete uv_httpsys;
             uv_httpsys = NULL;            
         }
     }
@@ -543,7 +561,7 @@ void httpsys_read_request_body_callback(uv_async_t* handle, int status)
         httpsys_free(uv_httpsys, FALSE);
         uv_httpsys = NULL;
     }
-    else if (ERROR_HANDLE_EOF == (NTSTATUS)uv_httpsys->uv_async.async_req.overlapped.Internal)
+    else if (ERROR_HANDLE_EOF == overlappedResult)
     {
         // End of request body - notify JavaScript
 
@@ -557,14 +575,14 @@ void httpsys_read_request_body_callback(uv_async_t* handle, int status)
             uv_httpsys = NULL;
         }
     }
-    else if (S_OK != (NTSTATUS)uv_httpsys->uv_async.async_req.overlapped.Internal)
+    else if (S_OK != overlappedResult)
     {
         // Async completion failed - notify JavaScript
 
         httpsys_notify_error(
             uv_httpsys, 
             HTTPSYS_ERROR_READ_REQUEST_BODY, 
-            (unsigned int)uv_httpsys->uv_async.async_req.overlapped.Internal);
+            (unsigned int)overlappedResult);
         httpsys_free(uv_httpsys, TRUE);
         uv_httpsys = NULL;
     }
@@ -576,7 +594,7 @@ void httpsys_read_request_body_callback(uv_async_t* handle, int status)
         // http://sambro.is-super-awesome.com/2011/03/03/creating-a-proper-buffer-in-a-node-c-addon/
 
         Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_REQUEST_BODY);
-        ULONG length = (ULONG)uv_httpsys->uv_async.async_req.overlapped.InternalHigh;
+        ULONG length = overlappedLength;
         node::Buffer* slowBuffer = node::Buffer::New(length);
         memcpy(node::Buffer::Data(slowBuffer), uv_httpsys->buffer, length);
         Handle<Value> args[] = { slowBuffer->handle_, Integer::New(length), Integer::New(0) };
@@ -620,7 +638,7 @@ HRESULT httpsys_read_request_body_loop(uv_httpsys_t* uv_httpsys)
         // from the callback. If upon return the uv_httpsys is still not NULL,
         // it means there was no error and the request was not paused by the application.
 
-        httpsys_read_request_body_callback(&uv_httpsys->uv_async, (int)&uv_httpsys);
+        httpsys_read_request_body_callback(uv_httpsys->uv_async, (int)&uv_httpsys);
     }
 
     return (NO_ERROR == hr || ERROR_HANDLE_EOF == hr || ERROR_IO_PENDING == hr) ? S_OK : hr;
@@ -633,8 +651,7 @@ HRESULT httpsys_initiate_read_request_body(uv_httpsys_t* uv_httpsys)
 
     // Initialize libuv handle representing this async operation
 
-    RtlZeroMemory(&uv_httpsys->uv_async, sizeof(uv_async_t));
-    CheckError(uv_async_init(uv_default_loop(), &uv_httpsys->uv_async, httpsys_read_request_body_callback));
+    CheckError(httpsys_uv_httpsys_init(uv_httpsys, httpsys_read_request_body_callback));
 
     // Initiate async receive of the HTTP request body
 
@@ -645,19 +662,14 @@ HRESULT httpsys_initiate_read_request_body(uv_httpsys_t* uv_httpsys)
         uv_httpsys->buffer,
         uv_httpsys->bufferSize,
         NULL,
-        &uv_httpsys->uv_async.async_req.overlapped);
+        &uv_httpsys->uv_async->async_req.overlapped);
 
     if (ERROR_HANDLE_EOF == hr)
     {
         // End of request body, decrement libuv loop ref count since no async completion will follow
         // and generate JavaScript event
 
-#if UV_VERSION_MAJOR==0 && UV_VERSION_MINOR<8
-        uv_unref(uv_default_loop());
-#else
-        uv_unref((uv_handle_t*)&uv_httpsys->uv_async);
-#endif           
-        uv_httpsys->uv_async.loop = NULL;
+        httpsys_uv_httpsys_close(uv_httpsys);
         Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_END_REQUEST);
         httpsys_make_callback(event);
     }
@@ -707,18 +719,52 @@ Handle<Value> httpsys_init(const Arguments& args)
 
 void httpsys_prepare_new_requests(uv_prepare_t* handle, int status)
 {
+    HandleScope scope;
     uv_httpsys_server_t* uv_httpsys_server = CONTAINING_RECORD(handle, uv_httpsys_server_t, uv_prepare);
     HRESULT hr;
     uv_httpsys_t* uv_httpsys = NULL;
 
+    if (uv_httpsys_server->closing && 0 == uv_httpsys_server->refCount) 
+    {
+        // The HTTP.SYS server is closing as a result of a call to Server.close(). 
+        // The HTTP.SYS request queue has already been closed in httpsys_stop_listen. 
+        // Given that the refCount of pending async operatoins has reached zero, we can
+        // now perform final cleanup of the server, including notifying JavaScript that 
+        // closing has completed. 
+
+        // Stop this callback from executing again.
+
+        uv_prepare_stop(&uv_httpsys_server->uv_prepare);
+
+        // Emit the close event to JavaScript.
+
+        httpsys_make_callback(
+            httpsys_create_event(uv_httpsys_server, HTTPSYS_SERVER_CLOSED));
+
+        // Clean up data structures
+
+        uv_httpsys_server->event.Dispose();
+        uv_httpsys_server->event.Clear();
+        delete uv_httpsys_server;
+        uv_httpsys_server = NULL;
+
+        // Terminate HTTP Server. The corresponding HttpInitiate call was made in 
+        // httpsys_listen.
+
+        CheckError(HttpTerminate(
+            HTTP_INITIALIZE_SERVER, 
+            NULL));
+
+        return;
+    }
+
     while (uv_httpsys_server->readsToInitialize)
     {
         // TODO: address a situation when some new requests fail while others not - cancel them?
-        ErrorIf(NULL == (uv_httpsys = (uv_httpsys_t*)malloc(sizeof(uv_httpsys_t))),
-            ERROR_NOT_ENOUGH_MEMORY);
+        ErrorIf(NULL == (uv_httpsys = new uv_httpsys_t), ERROR_NOT_ENOUGH_MEMORY);
         RtlZeroMemory(uv_httpsys, sizeof(uv_httpsys_t));
         uv_httpsys->uv_httpsys_server = uv_httpsys_server;
-        CheckError(httpsys_initiate_new_request(uv_httpsys));
+        CheckError(httpsys_initiate_new_request(uv_httpsys));        
         uv_httpsys = NULL;
         uv_httpsys_server->readsToInitialize--;
     }
@@ -754,21 +800,16 @@ Handle<Value> httpsys_listen(const Arguments& args)
 
     Handle<Object> options = args[0]->ToObject();
 
-    // Lazy, one-time initialization of HTTP.SYS
+    // Lazy initialization of HTTP.SYS
 
-    if (!initialized) 
-    {
-        CheckError(HttpInitialize(
-            HttpApiVersion, 
-            HTTP_INITIALIZE_SERVER, 
-            NULL));
-        initialized = 1;
-    }
+    CheckError(HttpInitialize(
+        HttpApiVersion, 
+        HTTP_INITIALIZE_SERVER, 
+        NULL));
 
     // Create uv_httpsys_server_t
 
-    ErrorIf(NULL == (uv_httpsys_server = (uv_httpsys_server_t*)malloc(sizeof(uv_httpsys_server_t))),
-        ERROR_NOT_ENOUGH_MEMORY);
+    ErrorIf(NULL == (uv_httpsys_server = new uv_httpsys_server_t), ERROR_NOT_ENOUGH_MEMORY);
     RtlZeroMemory(uv_httpsys_server, sizeof(uv_httpsys_server_t));
 
     // Create the request queue name by replacing slahes in the URL with _
@@ -920,7 +961,7 @@ Error:
             HttpCloseServerSession(uv_httpsys_server->sessionId);
         }
 
-        free(uv_httpsys_server);
+        delete uv_httpsys_server;
         uv_httpsys_server = NULL;
     }
 
@@ -939,25 +980,38 @@ Handle<Value> httpsys_stop_listen(const Arguments& args)
     HRESULT hr;
 
     uv_httpsys_server_t* uv_httpsys_server = (uv_httpsys_server_t*)Handle<Object>::Cast(args[0])->GetPointerFromInternalField(0);
+
+    // Mark the HTTP.SYS listener as closing. Next time the httpsys_prepare_new_requests
+    // callback is entered, and the pending async operations associated with the server have 
+    // drained (as indicated by the uv_httpsys_server->refCount), it will have a chance to 
+    // perform final cleanup.
+
+    uv_httpsys_server->closing = TRUE;
+
+    // Close the HTTP.SYS URL group
+
     if (HTTP_NULL_ID != uv_httpsys_server->groupId)
     {
         CheckError(HttpCloseUrlGroup(uv_httpsys_server->groupId));
     }
 
+    // Perform graceful shutdown of the HTTP.SYS request queue, then close the queue.
+    // This will cause all pending async operations to be cancelled, which the system
+    // will be notified about via the IO completion port of the main libuv event loop. 
+    // Appropriate async callbacks will be executed to react to these cancellations.
+
     if (NULL != uv_httpsys_server->requestQueue)
     {
+        CheckError(HttpShutdownRequestQueue(uv_httpsys_server->requestQueue));
         CheckError(HttpCloseRequestQueue(uv_httpsys_server->requestQueue));
     }
+
+    // Close the HTTP.SYS server session
 
     if (HTTP_NULL_ID != uv_httpsys_server->sessionId)
     {
         CheckError(HttpCloseServerSession(uv_httpsys_server->sessionId));
     }
-
-    uv_prepare_stop(&uv_httpsys_server->uv_prepare);
-
-    // TODO: deallocate uv_httpsys_server and release uv_httpsys_server->event 
-    // after graceful close of active requests
 
     return handleScope.Close(Undefined());
 
@@ -1002,11 +1056,6 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
         flags |= HTTP_SEND_RESPONSE_FLAG_ENABLE_NAGLING;
     }
 
-    // Initialize libuv handle representing this async operation
-
-    RtlZeroMemory(&uv_httpsys->uv_async, sizeof(uv_async_t));
-    CheckError(uv_async_init(uv_default_loop(), &uv_httpsys->uv_async, httpsys_write_callback));        
-
     // Get response status code
 
     statusCode = options->Get(v8statusCode)->Uint32Value();
@@ -1024,8 +1073,7 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
         
         // Create an initialize uv_httpsys for writing of the response
 
-        ErrorIf(NULL == (uv_httpsys->uv_httpsys_peer = (uv_httpsys_t*)malloc(sizeof(uv_httpsys_t))),
-            ERROR_NOT_ENOUGH_MEMORY);
+        ErrorIf(NULL == (uv_httpsys->uv_httpsys_peer = new uv_httpsys_t), ERROR_NOT_ENOUGH_MEMORY);
         RtlZeroMemory(uv_httpsys->uv_httpsys_peer, sizeof(uv_httpsys_t));
         uv_httpsys->uv_httpsys_peer->uv_httpsys_server = uv_httpsys->uv_httpsys_server;
         uv_httpsys->uv_httpsys_peer->requestId = uv_httpsys->requestId;
@@ -1039,6 +1087,10 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
     }
 
     uv_httpsys->response.StatusCode = statusCode;
+
+    // Initialize libuv handle representing this async operation
+
+    CheckError(httpsys_uv_httpsys_init(uv_httpsys, httpsys_write_callback));
 
     // If the request is to be disconnected, it indicates a rejected HTTP upgrade request. 
     // In that case the request is closed and native resources deallocated. 
@@ -1059,14 +1111,14 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
             NULL,
             NULL,
             0,
-            &uv_httpsys->uv_async.async_req.overlapped,
+            &uv_httpsys->uv_async->async_req.overlapped,
             NULL);
 
         if (NO_ERROR == hr)
         {
             // Synchronous completion. 
 
-            httpsys_write_callback(&uv_httpsys->uv_async, 1);
+            httpsys_write_callback(uv_httpsys->uv_async, 1);
         }
         else 
         {
@@ -1164,14 +1216,14 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
         NULL,
         NULL,
         0,
-        &uv_httpsys->uv_async.async_req.overlapped,
+        &uv_httpsys->uv_async->async_req.overlapped,
         NULL);
 
     if (NO_ERROR == hr)
     {
         // Synchronous completion. 
 
-        httpsys_write_callback(&uv_httpsys->uv_async, 1);
+        httpsys_write_callback(uv_httpsys->uv_async, 1);
     }
     else 
     {
@@ -1212,8 +1264,7 @@ void httpsys_write_callback(uv_async_t* handle, int status)
 
         uv_httpsys->disconnectProcessed = TRUE;
 
-        RtlZeroMemory(&uv_httpsys->uv_async, sizeof(uv_async_t));
-        CheckError(uv_async_init(uv_default_loop(), &uv_httpsys->uv_async, httpsys_write_callback));
+        CheckError(httpsys_uv_httpsys_init(uv_httpsys, httpsys_write_callback));
 
         hr = HttpSendResponseEntityBody(
             uv_httpsys->uv_httpsys_server->requestQueue,
@@ -1224,23 +1275,23 @@ void httpsys_write_callback(uv_async_t* handle, int status)
             NULL,
             NULL,
             0,
-            &uv_httpsys->uv_async.async_req.overlapped,
+            &uv_httpsys->uv_async->async_req.overlapped,
             NULL);
 
         if (ERROR_IO_PENDING != hr)
         {
             // Synchronous completion or an error - execute callback manually to release the uv_httpsys.
-            httpsys_write_callback(&uv_httpsys->uv_async, 1);
+            httpsys_write_callback(uv_httpsys->uv_async, 1);
         }
     }
-    else if (S_OK != (NTSTATUS)uv_httpsys->uv_async.async_req.overlapped.Internal)
+    else if (S_OK != overlappedResult)
     {
         // Async completion failed - notify JavaScript
 
         httpsys_notify_error(
             uv_httpsys, 
             HTTPSYS_ERROR_WRITING, 
-            (unsigned int)uv_httpsys->uv_async.async_req.overlapped.Internal);
+            (unsigned int)overlappedResult);
         httpsys_free(uv_httpsys, TRUE);
         uv_httpsys = NULL;
     }
@@ -1355,8 +1406,7 @@ Handle<Value> httpsys_write_body(const Arguments& args)
 
     // Initialize libuv handle representing this async operation
 
-    RtlZeroMemory(&uv_httpsys->uv_async, sizeof(uv_async_t));
-    CheckError(uv_async_init(uv_default_loop(), &uv_httpsys->uv_async, httpsys_write_callback));
+    CheckError(httpsys_uv_httpsys_init(uv_httpsys, httpsys_write_callback));
 
     // Prepare response body and determine flags
 
@@ -1373,14 +1423,14 @@ Handle<Value> httpsys_write_body(const Arguments& args)
         NULL,
         NULL,
         0,
-        &uv_httpsys->uv_async.async_req.overlapped,
+        &uv_httpsys->uv_async->async_req.overlapped,
         NULL);
 
     if (NO_ERROR == hr)
     {
         // Synchronous completion. 
 
-        httpsys_write_callback(&uv_httpsys->uv_async, 1);
+        httpsys_write_callback(uv_httpsys->uv_async, 1);
     }
     else 
     {
@@ -1401,8 +1451,6 @@ Error:
 void init(Handle<Object> target) 
 {
     HandleScope handleScope;
-
-    initialized = 0;
 
     // Create V8 representation of HTTP verb strings to reuse across requests
 

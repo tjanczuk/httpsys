@@ -10,11 +10,14 @@ describe('einaros/ws', function () {
 
     afterEach(function (done) {
         if (server) {
-            server.close();
-            server = undefined;
+            server.close(function () {
+                done();
+                server = undefined;
+            });
         }
-
-        done();
+        else {
+            done();
+        }
     });
 
     it('works', function (done) {

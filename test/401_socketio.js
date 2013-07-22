@@ -10,11 +10,14 @@ describe('socket.io', function () {
 
     afterEach(function (done) {
         if (server) {
-            server.close();
-            server = undefined;
+            server.close(function () {
+                done();
+                server = undefined;
+            });
         }
-
-        done();
+        else {
+            done();
+        }
     });
 
     it('works with websocket transport', function (done) {
@@ -63,7 +66,7 @@ describe('socket.io', function () {
             clientLog.push(message);
             sendNext();
         }).on('disconnect', function (reason) {
-            clientLog.push('disconnect', reason);
+            clientLog.push('disconnect', reason);            
         });
 
         function sendNext() {
