@@ -6,7 +6,7 @@ var http = require('http')
 var port = process.env.PORT || 3103;
 var server;
 
-describe('slipstream', function () {
+describe('103_slipstream.js: slipstream', function () {
 
     afterEach(function (done) {
         if (server) {
