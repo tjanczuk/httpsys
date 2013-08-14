@@ -565,9 +565,15 @@ void httpsys_read_request_body_callback(uv_async_t* handle, int status)
     {
         // End of request body - notify JavaScript
 
-        Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_END_REQUEST);
         BOOL freePending = NULL != uv_httpsys->uv_httpsys_peer;
-        httpsys_make_callback(event);
+
+        if (!uv_httpsys->responseStarted) {
+            // Do not emit the `end` event if the app already started writing the response
+
+            Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_END_REQUEST);
+            httpsys_make_callback(event);
+        }
+
         if (freePending) {
             // This is an upgraded request which has a peer uv_httpsys to handle the response.
             // Since the request uv_httpsys is no longer needed, deallocate it. 
@@ -580,10 +586,15 @@ void httpsys_read_request_body_callback(uv_async_t* handle, int status)
     {
         // Async completion failed - notify JavaScript
 
-        httpsys_notify_error(
-            uv_httpsys, 
-            HTTPSYS_ERROR_READ_REQUEST_BODY, 
-            (unsigned int)overlappedResult);
+        if (!uv_httpsys->responseStarted) {
+            // Do not emit the `error` event if the app already started writing the response
+
+            httpsys_notify_error(
+                uv_httpsys, 
+                HTTPSYS_ERROR_READ_REQUEST_BODY, 
+                (unsigned int)overlappedResult);
+        }
+
         httpsys_free(uv_httpsys, TRUE);
         uv_httpsys = NULL;
     }
@@ -591,20 +602,27 @@ void httpsys_read_request_body_callback(uv_async_t* handle, int status)
     {
         // Successful completion - send body chunk to JavaScript as a Buffer
 
+        BOOL continueReading = TRUE;
+
         // Good explanation of native Buffers at 
         // http://sambro.is-super-awesome.com/2011/03/03/creating-a-proper-buffer-in-a-node-c-addon/
 
-        Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_REQUEST_BODY);
-        ULONG length = overlappedLength;
-        node::Buffer* slowBuffer = node::Buffer::New(length);
-        memcpy(node::Buffer::Data(slowBuffer), uv_httpsys->buffer, length);
-        Handle<Value> args[] = { slowBuffer->handle_, Integer::New(length), Integer::New(0) };
-        Handle<Object> fastBuffer = bufferConstructor->NewInstance(3, args);
-        event->Set(v8data, fastBuffer);
+        if (!uv_httpsys->responseStarted) {
+            // Do not emit the `data` event if the app already started writing the response
 
-        Handle<Value> result = httpsys_make_callback(event);
+            Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_REQUEST_BODY);
+            ULONG length = overlappedLength;
+            node::Buffer* slowBuffer = node::Buffer::New(length);
+            memcpy(node::Buffer::Data(slowBuffer), uv_httpsys->buffer, length);
+            Handle<Value> args[] = { slowBuffer->handle_, Integer::New(length), Integer::New(0) };
+            Handle<Object> fastBuffer = bufferConstructor->NewInstance(3, args);
+            event->Set(v8data, fastBuffer);
 
-        if (result->IsBoolean() && result->BooleanValue())
+            Handle<Value> result = httpsys_make_callback(event);
+            continueReading = result->IsBoolean() && result->BooleanValue();
+        }
+
+        if (continueReading)
         {
             // If the callback response is 'true', proceed to read more of the request body. 
             // Otherwise request had been paused and will be resumed asynchronously from JavaScript
@@ -629,7 +647,7 @@ void httpsys_read_request_body_callback(uv_async_t* handle, int status)
 
 HRESULT httpsys_read_request_body_loop(uv_httpsys_t* uv_httpsys)
 {
-    HRESULT hr;
+    HRESULT hr = S_OK;
 
     // Continue reading the request body synchronously until EOF, and error, 
     // request is paused or async completion is expected.
@@ -671,13 +689,21 @@ HRESULT httpsys_initiate_read_request_body(uv_httpsys_t* uv_httpsys)
         // and generate JavaScript event
 
         httpsys_uv_httpsys_close(uv_httpsys);
-        Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_END_REQUEST);
-        httpsys_make_callback(event);
+        if (!uv_httpsys->responseStarted) {
+            // Do not emit the `end` event if the app already started writing the response
+
+            Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_END_REQUEST);
+            httpsys_make_callback(event);
+        }
     }
     else if (ERROR_IO_PENDING != hr && NO_ERROR != hr)
     {
         // Initiation failed - notify JavaScript
-        httpsys_notify_error(uv_httpsys, HTTPSYS_ERROR_INITIALIZING_READ_REQUEST_BODY, hr);
+        if (!uv_httpsys->responseStarted) {
+            // Do not emit the `error` event if the app already started writing the response
+            httpsys_notify_error(uv_httpsys, HTTPSYS_ERROR_INITIALIZING_READ_REQUEST_BODY, hr);
+        }
+
         httpsys_free(uv_httpsys, TRUE);
         uv_httpsys = NULL;
     }
@@ -1085,6 +1111,14 @@ Handle<Value> httpsys_write_headers(const Arguments& args)
 
         uv_httpsys_req = uv_httpsys;
         uv_httpsys = uv_httpsys->uv_httpsys_peer;
+    }
+    else {
+        // For regular HTTP requests, once the response had been initiated, further
+        // `data` and `end` events will not be emitted even if the request had
+        // not been read entirely. This flag is used to stop issuing read requests
+        // against HTTP.SYS for this request. 
+
+        uv_httpsys->responseStarted = TRUE;
     }
 
     uv_httpsys->response.StatusCode = statusCode;

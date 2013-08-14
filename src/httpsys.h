@@ -56,6 +56,7 @@ typedef struct uv_httpsys_s {
     unsigned int bufferSize;
     HTTP_DATA_CHUNK chunk;
     int lastChunkSent;
+    BOOL responseStarted;
     BOOL disconnect;
     BOOL disconnectProcessed;
     BOOL closed;
