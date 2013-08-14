@@ -561,13 +561,14 @@ void httpsys_read_request_body_callback(uv_async_t* handle, int status)
         httpsys_free(uv_httpsys, FALSE);
         uv_httpsys = NULL;
     }
-    else if (ERROR_HANDLE_EOF == overlappedResult)
+    else if (ERROR_HANDLE_EOF == overlappedResult || 0 == overlappedLength)
     {
         // End of request body - notify JavaScript
 
         Handle<Object> event = httpsys_create_event(uv_httpsys, HTTPSYS_END_REQUEST);
+        BOOL freePending = NULL != uv_httpsys->uv_httpsys_peer;
         httpsys_make_callback(event);
-        if (uv_httpsys->uv_httpsys_peer) {
+        if (freePending) {
             // This is an upgraded request which has a peer uv_httpsys to handle the response.
             // Since the request uv_httpsys is no longer needed, deallocate it. 
 
