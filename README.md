@@ -1,16 +1,29 @@
-httpsys - native HTTP stack for node.js on Windows
+Native HTTP stack for Node.js on Windows
 ===
 
-The `httpsys` module is a native HTTP stack for node.js applications on Windows. It is based on HTTP.SYS. 
-Compared to the built in HTTP stack in node.js it offers better performance, kernel mode output caching, port sharing, and kernel mode SSL configuration. WebSockets are currently not supported; once the support is added, it will only work starting from Windows 8. Cluster is supported. The module aspires to provide high level of API and behavior compatibility with the built in HTTP stack in node.js. 
+The httpsys module is a native, server side HTTP stack for node.js applications on Windows. It is based on HTTP.SYS. 
 
-This is a very early version of the module. Not much testing or performance optimization had been done. The module had been developed against node.js 0.8.7 (but should work against 0.8.x). Both x86 and x64 architectures are supported. Any and all feedback is welcome [here](https://github.com/tjanczuk/httpsys/issues/new).
+### Benefits
 
-See early [performance comparison with the built-in HTTP stack](http://tomasz.janczuk.org/2012/08/the-httpsys-stack-for-nodejs-apps-on.html).
+Compared to the built in HTTP[S] stack in Node.js, the httpsys module offers:
+
+* *Better performance*. Check out [early performance benchmarks](http://tomasz.janczuk.org/2012/08/the-httpsys-stack-for-nodejs-apps-on.html).  
+* *Kernel mode output caching*. Applications suitable for output caching can realize additional, substantial increases in throughput. See [benchmarks](http://tomasz.janczuk.org/2012/08/the-httpsys-stack-for-nodejs-apps-on.html).  
+* *Port sharing*. Horizontally partitioned applications (e.g. web chat) can use very efficient kernel mode routing to achieve process level affinity for increased throughput and reduced latency. [Read more](http://tomasz.janczuk.org/2013/05/how-to-save-5-million-running-nodejs.html).  
+* *Kernel mode SSL configuration*. SSL credentials are securely configured using Windows tools rather than stored in files or provided through code. 
+
+### Compatibility
+
+The httpsys module requires Windows. It works with any stable version of Node.js, both 32- and 64-bit. The module was developed and tested with Node.js 0.6.20, 0.8.22, 0.10.15, each in 32 and 64 bit flavors. 
+
+WebSockets functionality requires Windows 8 or Windows Server 2012 or later. 
+
+The module aspires to provide high level of API and behavioral compatibility with the built in server side HTTP stack in Node.js. While it is impossible to guarantee compatibility will all Node.js applications, the httpsys module was proved to work with the cluster module, the [einaros/ws](https://github.com/einaros/ws) module for WebSockets, as well as the [socket.io](http://socket.io/) module for WebSockets and HTTP long polling. 
+Any and all feedback is welcome [here](https://github.com/tjanczuk/httpsys/issues/new). Collaboration welcome - I do take contributions.
 
 ### Getting started
 
-You must have node.js 0.8.x installed. Then:
+You must have Windows and a stable version of Node.js installed (0.6, 0.8, 0.10). Then:
 
 ```
 npm install httpsys
@@ -19,7 +32,11 @@ npm install httpsys
 Then in your code:
 
 ```javascript
-var http = require('httpsys').http();
+// Replace the built-in HTTP[S] module with httpsys.
+// This must be the first line of the app. 
+require('httpsys').slipstream(); 
+
+var http = require('http');
 
 http.createServer(function (req, res) {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -32,7 +49,9 @@ http.createServer(function (req, res) {
 To use port sharing, provide a full [URL prefix string](http://msdn.microsoft.com/en-us/library/windows/desktop/aa364698(v=vs.85\).aspx) in the call to `Server.listen`, e.g.:
 
 ```javascript
-var http = require('httpsys').http();
+require('httpsys').slipstream(); 
+
+var http = require('http');
 
 http.createServer(function (req, res) {
   // ...
@@ -40,6 +59,8 @@ http.createServer(function (req, res) {
 ```
 
 At the same time, you can start another node.exe process that listens on a different URL prefix on the same port, e.g. `http://*:8080/bar/`. Each of the processes will only receive requests matching the URL prefix they registered for. The processes may belong to different users. 
+
+Port sharing is particularly relevant to horizontally partitioned applications (e.g. web chat). With it you can use very efficient kernel mode routing to achieve process level affinity for increased throughput and reduced latency. [Read more](http://tomasz.janczuk.org/2013/05/how-to-save-5-million-running-nodejs.html).  
 
 ### HTTPS
 
@@ -73,7 +94,9 @@ netsh http show sslcert ipport=0.0.0.0:8080
 Finally, author your HTTPS server:
 
 ```javascript
-var https = require('httpsys').https();
+require('httpsys').slipstream(); 
+
+var https = require('http');
 var options = {};
 
 https.createServer(options, function (req, res) {
@@ -102,7 +125,9 @@ node server.js
 There are no changes required in the code of your application, unless you want to override the default cache duration for a particular HTTP response: 
 
 ```javascript
-var http = require('httpsys').http();
+require('httpsys').slipstream(); 
+
+var http = require('http');
 
 http.createServer(function (req, res) {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -115,6 +140,16 @@ Note that if you do not set the `HTTPSYS_CACHE_DURATION` environment variable at
 
 You can inspect the state of the HTTP.SYS output cache using the `netsh http show cachestate` command. 
 
+### WebSockets
+
+The httpsys module supports WebSockets on Windows 8 or Windows Server 2012 or later. The module was proved to work with the [einaros/ws](https://github.com/einaros/ws) module for WebSockets, as well as the [socket.io](http://socket.io/) module for WebSockets and HTTP long polling. Check out tests for code samples. 
+
+### Cluster
+
+Cluster functionality is supported. 
+
+Note that when you use HTTP.SYS output caching, using cluster is typically not necessary to fully saturate server CPU. This is because HTTP.SYS is multi-threaded, and with adequate request load can fully utilize the server CPU serving responses from the cache.
+
 ### Other configuration options
 
 There are a few other aspects of the `httpsys` module behavior that are controlled with environment variables:
@@ -123,14 +158,52 @@ There are a few other aspects of the `httpsys` module behavior that are controll
 * `HTTPSYS_BUFFER_SIZE` - the size of the memory buffer used for reading HTTP requests in bytes. The default is 4096. If you are expecting HTTP requests with headers that exceed this size (e.g. large cookies or authentication), you may need to increase this value to e.g. 16384.
 * `HTTPSYS_REQUEST_QUEUE_LENGTH` - the maximum number of HTTP requests that HTTP.SYS will allow to be queued up before responding with a 503 to new requests. This is helpful in addressing short-lived spikes in traffic. The default is 5000.
 * `HTTPSYS_PENDING_READ_COUNT` - the number of async read requests for new HTTP requests that `httpsys` will maintain at any given point in time. The default is 1. 
-* `HTTPSYS_NATIVE` - fully qualified file name of the native httpsys.node module to use; this is useful when working with custom builds of the `httpsys` module.
+* `HTTPSYS_NATIVE` - fully qualified file name of the native httpsys.node module to use; this is useful when working with custom builds of the `httpsys` module.  
 
-### Cluster
+### APIs
 
-Cluster functionality is supported. 
+The httpsys module exposes the following functions:
 
-Note that when you use HTTP.SYS output caching, using cluster is typically not necessary to fully saturate server CPU. This is because HTTP.SYS is multi-threaded, and with adequate request load can fully utilize the server CPU serving responses from the cache.
+* *slipstream()*. Calling this function first in your application replaces Node.js'es built-in server side HTTP(S) stack with httpsys. This means that subsequent calls to `require('http')` or `require('https')` will return a version of the module based on HTTP.SYS.  
+* *http()*. If you don't want to globally replace the built-in HTTP(S) modules with httpsys by calling `slipstream()`, you can obtain an isolated reference to the httpsys version of the built-in *http* module with a call to `http()`. 
+* *https()*. Similar to `http()`, only for HTTPS. 
+
+### Building
+
+To build httpsys, you must have Visual Studio 2012 or Visual Studio Express 2012 for Windows Desktop. There are a few ways to build depending on what you want to achieve. 
+
+To build httpsys for all supported versions and flavors of Node.js: (0.6.20, 0.8.22, 0.10.15) x (x32, x64), call
+
+```text
+tools\buildall.bat
+```
+
+The first time you call the command above, respective versions of Node.js and node-gyp will be dynamically downloaded from the web. Subsequent builds will use the downloaded versions and be faster. The build results in several flavors of *httpsys.node* module binplaced in directories under *lib\native\win32* and ready to use. 
+
+To build a debug version of httpsys for the version and flavor of Node.js currently installed on your machine, call:
+
+```text
+tools\builddev.bat
+```
+
+Once you set the `HTTPSYS_NATIVE` environment variable to point to the resulting *httpsys.node* binary, you can run your apps with that custom version of httpsys. Useful for debugging and development. 
+
+### Running tests
+
+To run tests using the version and falvor of Node.js installed on your machine, call
+
+```text
+npm test
+```
+
+To run tests against all the versions and flavors against which httpsys was built, call:
+
+```text
+test\testall.bat
+```
+
+Note that prior to calling *testall.bat* you must have successfuly built the module using `tools\buildall.bat` to ensure the required versions of *node.exe* are present in expected locations. 
 
 ### Feedback
 
-Any and all feedback is welcome [here](https://github.com/tjanczuk/httpsys/issues/new).
+Please provide feedback and ask questions [here](https://github.com/tjanczuk/httpsys/issues/new). Collaboration welcome - I do take contributions. 
