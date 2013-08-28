@@ -65,7 +65,7 @@ Port sharing is particularly relevant to horizontally partitioned applications (
 
 ### HTTPS
 
-Create a self-signed X.509 certificate with associated private key and place it in the LocalMachine\My certificate store:
+Create a self-signed X.509 server certificate with associated private key and place it in the LocalMachine\My certificate store:
 
 ```
 makecert -sr LocalMachine -ss My -pe -n "CN=mydomain.com" -a sha256 -len 1024 -r
@@ -111,6 +111,51 @@ Note that the X.509 credentials had already been configured with HTTP.SYS, so th
 Now, visit your endpoint by going to `https://localhost:8080`. The browser will display a warning given that the certificate is self-signed and therefore not trusted, but otherwise your server is fully functional. 
 
 To inspect or modify HTTP.SYS configuration underlying your server use the `netsh http` command in Windows. This allows you to set various timeout values as well as configure SSL certificates. 
+
+### HTTPS mutual X.509 authentication
+
+You can configure httpsys module to require and validate client X.509 certificate. Unlike with the built-in `https` module, trust verification checks of the client certificate are configured at the operating system level using the certificate store and the `netsh` tool rather than with the `options` object passed to the `https.createServer` method. 
+
+All SSL and cryptographic properties specified within the `options` object passed to `https.createServer` function are ignored. In partcular, none of the `options.ca`, `options.rejectUnauthorized`, and `options.requestCert` are effective. 
+
+To require the client to present an X.509 certificate during SSL handshake, you must configure the HTTP.SYS accordingly when registering the server certificate for a particlar TCP port, e.g.:
+
+```text
+netsh http add sslcert ipport=0.0.0.0:3501 certhash=EC2F8BD2360C61180C0DA68C2DC911EB6708B1E5 
+      appid={00112233-4455-6677-8899-AABBCCDDEEFE} clientcertnegotiation=enable
+```
+
+(Note the `clientcertnegotiation=enable` setting).
+
+By default HTTP.SYS will validate client certificates by attempting to build a certificate chain up to a trusted root using the LocalMachine certificate store. You control your trust base by controlling the content of that certificate store using tools like `certmgr`, `certutil`, or the certificate plug-in for `mmc`. In addition, the `netsh http add sslcert` command allows you to fine tune the client certificate validation behavior for a particular TCP port. 
+
+The httpsys module never automatically rejects HTTPS request when the client presents an invalid or untrusted X.509 certificate. The application code must consult the `req.client.authorized`, `req.client.authorizationError`, and `req.client.getPeerCertificate()` values before deciding to accept or reject a request. 
+
+If the client certificate is trusted, `req.client.authorized` is *true*. Otherwise `req.client.authorizationError` contains one of the following error codes, or a hexadecimal number for more esoteric error conditions:
+
+* CERT_E_EXPIRED  
+* CERT_E_UNTRUSTEDCA  
+* TRUST_E_CERT_SIGNATURE  
+* CRYPT_E_REVOKED  
+* CERT_E_UNTRUSTEDROOT  
+* CERT_E_WRONG_USAGE  
+* CRYPT_E_NO_REVOCATION_CHECK  
+* CRYPT_E_REVOCATION_OFFLINE  
+* CERT_E_CHAINING 
+
+Whenever the client presented an X.509 certificate (even one that failed validation), the `req.client.getPeerCertificate()` will return an object describing some key properties of the certificate, e.g.:
+
+```json
+{   
+	subject: 'CN=localhost',
+	issuer: 'CN=localhost',
+	valid_from: 'Mon, 12 Aug 2013 14:23:23 GMT',
+	valid_to: 'Wed, 31 Dec 2098 22:00:00 GMT',
+	fingerprint: 'C0:8E:29:A6:96:CC:C5:A2:5E:2F:3B:9A:94:34:EA:62:4B:83:7E:E8'
+}
+```
+
+The httpsys module can optionally pass the entire, encoded X.509 certificate presented by the client to the application. To enable this feature, set the `HTTPSYS_EXPORT_CLIENT_CERT=1` environment variable. As a result the object returned from `req.client.getPeerCertificate()` will also contain an `encoded` property with a Buffer that holds the raw X.509 certificate. This may be useful for customized certificate validation, for example using the .NET's [X509Chain](http://msdn.microsoft.com/en-us/library/system.security.cryptography.x509certificates.x509chain.aspx) class accessed via [Edge.js](http://tjanczuk.github.io/edge). 
 
 ### HTTP.SYS output caching
 
@@ -160,6 +205,7 @@ There are a few other aspects of the `httpsys` module behavior that are controll
 * `HTTPSYS_REQUEST_QUEUE_LENGTH` - the maximum number of HTTP requests that HTTP.SYS will allow to be queued up before responding with a 503 to new requests. This is helpful in addressing short-lived spikes in traffic. The default is 5000.
 * `HTTPSYS_PENDING_READ_COUNT` - the number of async read requests for new HTTP requests that `httpsys` will maintain at any given point in time. The default is 1. 
 * `HTTPSYS_NATIVE` - fully qualified file name of the native httpsys.node module to use; this is useful when working with custom builds of the `httpsys` module.  
+* `HTTPSYS_EXPORT_CLIENT_CERT` - if set to 1, raw client X.509 certificates negotiated during SSL handshake will be provided to the application as a `encoded` property of the object returned from `req.client.getPeerCertificate()`.  
 
 ### APIs
 
