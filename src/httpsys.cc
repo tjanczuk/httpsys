@@ -32,6 +32,8 @@ Persistent<Function> bufferConstructor;
 HTTP_CACHE_POLICY cachePolicy;
 ULONG defaultCacheDuration;
 Persistent<ObjectTemplate> httpsysObject;
+RtlTimeToSecondsSince1970Func RtlTimeToSecondsSince1970Impl;
+BOOL httpsys_export_client_cert;
 
 // Global V8 strings reused across requests
 Handle<String> v8uv_httpsys_server;
@@ -56,6 +58,15 @@ Handle<String> v8value;
 Handle<String> v8cacheDuration;
 Handle<String> v8disconnect;
 Handle<String> v8noDelay;
+Handle<String> v8clientCertInfo;
+Handle<String> v8cert;
+Handle<String> v8authorizationError;
+Handle<String> v8subject;
+Handle<String> v8issuer;
+Handle<String> v8validFrom;
+Handle<String> v8validTo;
+Handle<String> v8fingerprint;
+Handle<String> v8encoded;
 
 // Maps HTTP_HEADER_ID enum to v8 string
 // http://msdn.microsoft.com/en-us/library/windows/desktop/aa364526(v=vs.85).aspx
@@ -354,6 +365,15 @@ void httpsys_new_request_callback(uv_async_t* handle, int status)
 
         req->Set(v8url, String::New(request->pRawUrl, request->RawUrlLength));
 
+        // Add client X.509 information
+
+        if (NULL != request->pSslInfo && NULL != request->pSslInfo->pClientCertInfo)
+        {
+            req->Set(
+                v8clientCertInfo, 
+                httpsys_create_client_cert_info(request->pSslInfo->pClientCertInfo));
+        }
+
         // Invoke the JavaScript callback passing event as the only paramater
 
         Handle<Value> result = httpsys_make_callback(event);
@@ -379,6 +399,128 @@ void httpsys_new_request_callback(uv_async_t* handle, int status)
             }
         }
     }
+}
+
+Handle<Object> httpsys_create_client_cert_info(PHTTP_SSL_CLIENT_CERT_INFO info)
+{
+    HandleScope scope;
+
+    Handle<Object> certInfo = Object::New();
+
+    // Set the authentication result
+
+    certInfo->Set(v8authorizationError, Number::New(info->CertFlags));
+
+    // Decode the certificate and create V8 representation
+    // http://msdn.microsoft.com/en-us/library/windows/desktop/aa381955(v=vs.85).aspx
+
+    PCCERT_CONTEXT certContext = CertCreateCertificateContext(
+        X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+        info->pCertEncoded,
+        info->CertEncodedSize);
+    DWORD size;
+    char* str = NULL;
+    ULONG time;
+
+    if (NULL != certContext)
+    {
+        Handle<Object> cert = Object::New();
+        certInfo->Set(v8cert, cert);
+
+        // Set the Subject's X500 name
+
+        size = CertNameToStr(
+            X509_ASN_ENCODING,
+            &certContext->pCertInfo->Subject,
+            CERT_X500_NAME_STR,
+            NULL,
+            0);
+
+        if (size > 0 && (NULL != (str = (char*)malloc(size))))
+        {
+            CertNameToStr(
+                X509_ASN_ENCODING,
+                &certContext->pCertInfo->Subject,
+                CERT_X500_NAME_STR,
+                str,
+                size);
+
+            cert->Set(v8subject, String::New(str));
+            free(str);
+            str = NULL;
+        }
+
+        // Set the Issuer's X500 name
+
+        size = CertNameToStr(
+            X509_ASN_ENCODING,
+            &certContext->pCertInfo->Issuer,
+            CERT_X500_NAME_STR,
+            NULL,
+            0);
+
+        if (size > 0 && (NULL != (str = (char*)malloc(size))))
+        {
+            CertNameToStr(
+                X509_ASN_ENCODING,
+                &certContext->pCertInfo->Issuer,
+                CERT_X500_NAME_STR,
+                str,
+                size);
+
+            cert->Set(v8issuer, String::New(str));
+            free(str);
+            str = NULL;
+        }
+
+        // Set the validity period
+
+        if (RtlTimeToSecondsSince1970Impl)
+        {
+            RtlTimeToSecondsSince1970Impl(
+                (PLARGE_INTEGER)&certContext->pCertInfo->NotBefore,
+                &time);
+            cert->Set(v8validFrom, Number::New(time));
+
+            RtlTimeToSecondsSince1970Impl(
+                (PLARGE_INTEGER)&certContext->pCertInfo->NotAfter,
+                &time);
+            cert->Set(v8validTo, Number::New(time));
+        }       
+
+        // Set the thumbprint 
+
+        size = 0;
+        if (CertGetCertificateContextProperty(certContext, CERT_SHA1_HASH_PROP_ID, NULL, &size)
+            && (NULL != (str = (char*)malloc(size)))
+            && CertGetCertificateContextProperty(certContext, CERT_SHA1_HASH_PROP_ID, str, &size))
+        {
+            node::Buffer* slowBuffer = node::Buffer::New(size);
+            memcpy(node::Buffer::Data(slowBuffer), str, size);
+            Handle<Value> args[] = { slowBuffer->handle_, Integer::New(size), Integer::New(0) };
+            Handle<Object> fastBuffer = bufferConstructor->NewInstance(3, args);
+            cert->Set(v8fingerprint, fastBuffer);
+
+            free(str);
+            str = NULL;
+        }
+
+        // If HTTPSYS_EXPORT_CLIENT_CERT environment variable is set,
+        // export the raw X.509 certificate presented by the client
+
+        if (httpsys_export_client_cert)
+        {
+            node::Buffer* slowBuffer = node::Buffer::New(certContext->cbCertEncoded);
+            memcpy(node::Buffer::Data(slowBuffer), certContext->pbCertEncoded, certContext->cbCertEncoded);
+            Handle<Value> args[] = { slowBuffer->handle_, Integer::New(certContext->cbCertEncoded), Integer::New(0) };
+            Handle<Object> fastBuffer = bufferConstructor->NewInstance(3, args);
+            cert->Set(v8encoded, fastBuffer);            
+        }
+
+        CertFreeCertificateContext(certContext);
+    }
+
+    return scope.Close(certInfo);
 }
 
 HRESULT httpsys_initiate_new_request(uv_httpsys_t* uv_httpsys)
@@ -1531,6 +1673,15 @@ void init(Handle<Object> target)
     v8cacheDuration = Persistent<String>::New(String::NewSymbol("cacheDuration"));
     v8disconnect = Persistent<String>::New(String::NewSymbol("disconnect"));
     v8noDelay = Persistent<String>::New(String::NewSymbol("noDelay"));
+    v8clientCertInfo = Persistent<String>::New(String::NewSymbol("clientCertInfo"));
+    v8cert = Persistent<String>::New(String::NewSymbol("cert"));
+    v8authorizationError = Persistent<String>::New(String::NewSymbol("authorizationError"));
+    v8subject = Persistent<String>::New(String::NewSymbol("subject"));
+    v8issuer = Persistent<String>::New(String::NewSymbol("issuer"));
+    v8validFrom = Persistent<String>::New(String::NewSymbol("valid_from"));
+    v8validTo = Persistent<String>::New(String::NewSymbol("valid_to"));
+    v8fingerprint = Persistent<String>::New(String::NewSymbol("fingerprint"));
+    v8encoded = Persistent<String>::New(String::NewSymbol("encoded"));
 
     // Capture the constructor function of JavaScript Buffer implementation
 
@@ -1541,6 +1692,16 @@ void init(Handle<Object> target)
 
     httpsysObject = Persistent<ObjectTemplate>::New(ObjectTemplate::New());
     httpsysObject->SetInternalFieldCount(1);
+
+    // Obtain reference to RtlTimeToSecondsSince1970 function
+
+    HMODULE ntdll = LoadLibrary("Ntdll.dll");
+    RtlTimeToSecondsSince1970Impl = 
+        (RtlTimeToSecondsSince1970Func)GetProcAddress(ntdll, "RtlTimeToSecondsSince1970");
+
+    // Determine whether to propagate raw client X.509 certificate to the application with HTTPS
+
+    httpsys_export_client_cert = (0 < GetEnvironmentVariable("HTTPSYS_EXPORT_CLIENT_CERT", NULL, 0));
 
     // Create exports
 

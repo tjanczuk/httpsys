@@ -13,6 +13,7 @@
 using namespace v8;
 
 #pragma comment(lib, "httpapi.lib")
+#pragma comment(lib, "crypt32.lib")
 
 #define ErrorIf(expr, hresult)    \
     if (expr)                     \
@@ -30,6 +31,10 @@ using namespace v8;
             goto Error;           \
         }                         \
     }
+
+// RtlTimeToSecondsSince1970 declaration
+
+typedef BOOLEAN (WINAPI *RtlTimeToSecondsSince1970Func)(PLARGE_INTEGER, PULONG);
 
 // Wrapper of the uv_prepare_t associated with an active server
 
@@ -93,6 +98,7 @@ HRESULT httpsys_initialize_body_chunks(Handle<Object> options, uv_httpsys_t* uv_
 HRESULT httpsys_uv_httpsys_init(uv_httpsys_t* uv_httpsys, uv_async_cb callback);
 HRESULT httpsys_uv_httpsys_close(uv_httpsys_t* uv_httpsys);
 void httpsys_close_uv_async_cb(uv_handle_t* uv_handle);
+Handle<Object> httpsys_create_client_cert_info(PHTTP_SSL_CLIENT_CERT_INFO info);
 
 // HTTP processing state machine actions and events
 
