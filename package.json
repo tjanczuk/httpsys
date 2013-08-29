@@ -5,7 +5,7 @@
     "url": "http://tomasz.janczuk.org",
     "twitter": "tjanczuk"
   },
-  "version": "0.3.1-pre",
+  "version": "0.3.1",
   "description": "Native HTTP stack for Node.js on Windows",
   "tags" : ["http", "https", "http.sys", "windows"],
   "main": "./lib/httpsys.js",
