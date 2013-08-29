@@ -145,7 +145,7 @@ If the client certificate is trusted, `req.client.authorized` is *true*. Otherwi
 
 Whenever the client presented an X.509 certificate (even one that failed validation), the `req.client.getPeerCertificate()` will return an object describing some key properties of the certificate, e.g.:
 
-```json
+```text
 {   
 	subject: 'CN=localhost',
 	issuer: 'CN=localhost',
