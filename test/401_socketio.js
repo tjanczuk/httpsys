@@ -71,7 +71,7 @@ describe('401_socketio.js: socket.io', function () {
                 serverLog.push(message);
                 ws.emit('message', message.toUpperCase());
             }).on('disconnect', function (reason) {
-                serverLog.push('disconnect', reason);
+                serverLog.push('disconnect');
                 validate();
             });
         });
@@ -94,7 +94,7 @@ describe('401_socketio.js: socket.io', function () {
             clientLog.push(message);
             sendNext();
         }).on('disconnect', function (reason) {
-            clientLog.push('disconnect', reason);        
+            clientLog.push('disconnect');        
             validate();    
         });
 
@@ -105,8 +105,8 @@ describe('401_socketio.js: socket.io', function () {
 
         function validate() {
             if (--refCount === 0) {
-                assert.deepEqual(serverLog, [ 'connection', 'one', 'two', 'three', 'four', 'disconnect', 'booted' ]);
-                assert.deepEqual(clientLog, [ 'connect', 'ONE', 'TWO', 'THREE', 'FOUR', 'disconnect', 'booted' ]);
+                assert.deepEqual(serverLog, [ 'connection', 'one', 'two', 'three', 'four', 'disconnect' ]);
+                assert.deepEqual(clientLog, [ 'connect', 'ONE', 'TWO', 'THREE', 'FOUR', 'disconnect' ]);
                 done();
             }
         }        
