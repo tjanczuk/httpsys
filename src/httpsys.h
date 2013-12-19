@@ -99,6 +99,7 @@ HRESULT httpsys_uv_httpsys_init(uv_httpsys_t* uv_httpsys, uv_async_cb callback);
 HRESULT httpsys_uv_httpsys_close(uv_httpsys_t* uv_httpsys);
 void httpsys_close_uv_async_cb(uv_handle_t* uv_handle);
 Handle<Object> httpsys_create_client_cert_info(PHTTP_SSL_CLIENT_CERT_INFO info);
+Handle<Object> httpsys_create_client_auth_info(PHTTP_REQUEST_AUTH_INFO info);
 
 // HTTP processing state machine actions and events
 
