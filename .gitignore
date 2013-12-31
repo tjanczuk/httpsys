@@ -29,3 +29,5 @@ _ReSharper*
 node.exe
 httpsys.node
 msvcr110.dll
+
+test/_dummy
