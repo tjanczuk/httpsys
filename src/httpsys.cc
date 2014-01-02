@@ -365,7 +365,7 @@ void httpsys_new_request_callback(uv_async_t* handle, int status)
 
         req->Set(v8httpVersionMajor, Integer::NewFromUnsigned(request->Version.MajorVersion));
         req->Set(v8httpVersionMinor, Integer::NewFromUnsigned(request->Version.MinorVersion));
-
+        
         // Add URL information
 
         req->Set(v8url, String::New(request->pRawUrl, request->RawUrlLength));
@@ -1076,7 +1076,16 @@ Handle<Value> httpsys_listen(const Arguments& args)
             &requestQueueLength,
             sizeof(requestQueueLength),
             0,
-            NULL));        
+            NULL));   
+
+        // Enable Negotiate Authentication
+
+        HTTP_SERVER_AUTHENTICATION_INFO authConfig = {0};
+        authConfig.Flags.Present	= 1;
+        authConfig.AuthSchemes		= HTTP_AUTH_ENABLE_NEGOTIATE;
+
+        CheckError(HttpSetUrlGroupProperty(uv_httpsys_server->groupId, 
+            HttpServerAuthenticationProperty, &authConfig,sizeof(HTTP_SERVER_AUTHENTICATION_INFO)));
 
         // Bind the request queue with the URL group to enable receiving
         // HTTP traffic on the request queue. 
