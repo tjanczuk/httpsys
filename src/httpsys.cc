@@ -67,6 +67,11 @@ Handle<String> v8validFrom;
 Handle<String> v8validTo;
 Handle<String> v8fingerprint;
 Handle<String> v8encoded;
+Handle<String> v8clientAuthorization;
+Handle<String> v8authStatus;
+Handle<String> v8authType;
+Handle<String> v8authFlags;
+Handle<String> v8authAccessToken;
 
 // Maps HTTP_HEADER_ID enum to v8 string
 // http://msdn.microsoft.com/en-us/library/windows/desktop/aa364526(v=vs.85).aspx
@@ -281,12 +286,12 @@ void httpsys_new_request_callback(uv_async_t* handle, int status)
     if (S_OK != overlappedResult)
     {
         // Async completion failed - notify JavaScript
-		
+        
         httpsys_notify_error(
             uv_httpsys, 
             HTTPSYS_ERROR_NEW_REQUEST,
             (unsigned int)overlappedResult);
-		
+        
         httpsys_free(uv_httpsys, TRUE);
         uv_httpsys = NULL;
     }
@@ -360,7 +365,7 @@ void httpsys_new_request_callback(uv_async_t* handle, int status)
 
         req->Set(v8httpVersionMajor, Integer::NewFromUnsigned(request->Version.MajorVersion));
         req->Set(v8httpVersionMinor, Integer::NewFromUnsigned(request->Version.MinorVersion));
-
+        
         // Add URL information
 
         req->Set(v8url, String::New(request->pRawUrl, request->RawUrlLength));
@@ -372,6 +377,17 @@ void httpsys_new_request_callback(uv_async_t* handle, int status)
             req->Set(
                 v8clientCertInfo, 
                 httpsys_create_client_cert_info(request->pSslInfo->pClientCertInfo));
+        }
+
+        // Add Client Authorization info
+
+        for(USHORT i = 0; i < request->RequestInfoCount;++i)
+        {
+            if(request->pRequestInfo[i].InfoType != HttpRequestInfoTypeAuth) continue;
+            HTTP_REQUEST_AUTH_INFO *authInfo = (HTTP_REQUEST_AUTH_INFO *)request->pRequestInfo[i].pInfo;
+            if (authInfo)
+                req->Set(v8clientAuthorization, httpsys_create_client_auth_info(authInfo));
+            break;
         }
 
         // Invoke the JavaScript callback passing event as the only paramater
@@ -399,6 +415,20 @@ void httpsys_new_request_callback(uv_async_t* handle, int status)
             }
         }
     }
+}
+
+Handle<Object> httpsys_create_client_auth_info(PHTTP_REQUEST_AUTH_INFO info) 
+{
+    HandleScope scope;
+
+    Handle<Object> authInfo = Object::New();
+
+    authInfo->Set(v8authStatus, Integer::New(info->AuthStatus));
+    authInfo->Set(v8authType, Integer::New(info->AuthType));
+    authInfo->Set(v8authFlags, Integer::New(info->Flags));
+    authInfo->Set(v8authAccessToken, Number::New(static_cast<double>((intptr_t)(info->AccessToken))));
+
+    return scope.Close(authInfo);
 }
 
 Handle<Object> httpsys_create_client_cert_info(PHTTP_SSL_CLIENT_CERT_INFO info)
@@ -1046,7 +1076,16 @@ Handle<Value> httpsys_listen(const Arguments& args)
             &requestQueueLength,
             sizeof(requestQueueLength),
             0,
-            NULL));        
+            NULL));   
+
+        // Enable Negotiate Authentication
+
+        HTTP_SERVER_AUTHENTICATION_INFO authConfig = {0};
+        authConfig.Flags.Present	= 1;
+        authConfig.AuthSchemes		= HTTP_AUTH_ENABLE_NEGOTIATE;
+
+        CheckError(HttpSetUrlGroupProperty(uv_httpsys_server->groupId, 
+            HttpServerAuthenticationProperty, &authConfig,sizeof(HTTP_SERVER_AUTHENTICATION_INFO)));
 
         // Bind the request queue with the URL group to enable receiving
         // HTTP traffic on the request queue. 
@@ -1682,6 +1721,11 @@ void init(Handle<Object> target)
     v8validTo = Persistent<String>::New(String::NewSymbol("valid_to"));
     v8fingerprint = Persistent<String>::New(String::NewSymbol("fingerprint"));
     v8encoded = Persistent<String>::New(String::NewSymbol("encoded"));
+    v8clientAuthorization = Persistent<String>::New(String::NewSymbol("clientAuthorization"));
+    v8authAccessToken = Persistent<String>::New(String::NewSymbol("authAccessToken"));
+    v8authFlags = Persistent<String>::New(String::NewSymbol("authFlags"));
+    v8authType = Persistent<String>::New(String::NewSymbol("authType"));
+    v8authStatus = Persistent<String>::New(String::NewSymbol("authStatus"));
 
     // Capture the constructor function of JavaScript Buffer implementation
 
