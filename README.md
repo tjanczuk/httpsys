@@ -47,7 +47,7 @@ http.createServer(function (req, res) {
 
 ### Port sharing
 
-To use port sharing, provide a full [URL prefix string](http://msdn.microsoft.com/en-us/library/windows/desktop/aa364698(v=vs.85\).aspx) in the call to `Server.listen`, e.g.:
+To use port sharing, provide a full [URL prefix string](http://msdn.microsoft.com/en-us/library/windows/desktop/aa364698(v=vs.85).aspx) in the call to `Server.listen`, e.g.:
 
 ```javascript
 require('httpsys').slipstream(); 
