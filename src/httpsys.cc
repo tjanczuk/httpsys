@@ -141,6 +141,13 @@ char* verbs[] = {
     "SEARCH"
 };
 
+const int LAST_ERROR_BUF_SIZE = 1024;
+char lastCheckErrorBuf[LAST_ERROR_BUF_SIZE];
+void SetLastFromCheckError(long err, const char *file, int line)
+{
+    sprintf_s(lastCheckErrorBuf,LAST_ERROR_BUF_SIZE,"%s.%d Error Code: %i",file,line,err);
+}
+
 // Processing common to all callbacks from HTTP.SYS:
 // - map the uv_async_t handle to uv_httpsys_t
 // - clean up uv_async indicate completion of async operation
@@ -1140,7 +1147,7 @@ Error:
         uv_httpsys = NULL;
     }
 
-    return handleScope.Close(ThrowException(Int32::New(hr)));
+    return handleScope.Close(ThrowException(String::New(lastCheckErrorBuf)));
 }
 
 Handle<Value> httpsys_stop_listen(const Arguments& args)
