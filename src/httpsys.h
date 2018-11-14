@@ -1,8 +1,14 @@
+#pragma once
+
 #ifndef __HTTPSYS_H
 #define __HTTPSYS_H
 
-// TODO: implement httpsys_resume
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#endif
 
+// TODO: implement httpsys_resume
+#include <nan.h>
 #include <SDKDDKVer.h>
 #include <node.h>
 #include <node_buffer.h>
@@ -14,6 +20,12 @@ using namespace v8;
 
 #pragma comment(lib, "httpapi.lib")
 #pragma comment(lib, "crypt32.lib")
+
+#define Log(format, ...)															\
+	memset(logBuf, 0, 1023);														\
+	_snprintf(logBuf, 1023, format, __VA_ARGS__);									\
+	for (int i = 0; i < 1024; i++) { if (logBuf[i] == '%') { logBuf[i] = ' '; } }	\
+	if (debugOut) { fprintf(stderr, logBuf); }
 
 #define ErrorIf(expr, hresult)    \
     if (expr)                     \
@@ -34,56 +46,61 @@ using namespace v8;
 
 // RtlTimeToSecondsSince1970 declaration
 
-typedef BOOLEAN (WINAPI *RtlTimeToSecondsSince1970Func)(PLARGE_INTEGER, PULONG);
+typedef BOOLEAN(WINAPI *RtlTimeToSecondsSince1970Func)(PLARGE_INTEGER, PULONG);
 
 // Wrapper of the uv_prepare_t associated with an active server
 
 struct uv_httpsys_s;
 
 typedef struct uv_httpsys_server_s {
-    uv_prepare_t uv_prepare;
-    HTTP_SERVER_SESSION_ID sessionId;
-    HTTP_URL_GROUP_ID groupId;
-    HANDLE requestQueue;
-    unsigned int readsToInitialize;
-    int refCount;
-    BOOL closing;
-    Persistent<Object> event;
+	uv_prepare_t uv_prepare;
+	HTTP_SERVER_SESSION_ID sessionId;
+	HTTP_URL_GROUP_ID groupId;
+	HANDLE requestQueue;
+	unsigned int readsToInitialize;
+	int refCount;
+	BOOL closing;
+	Nan::Persistent<v8::Object> event;
 } uv_httpsys_server_t;
 
 // Wrapper of the uv_async_t with HTTP.SYS specific data
 
 typedef struct uv_httpsys_s {
-    uv_async_t* uv_async;
-    HTTP_REQUEST_ID requestId;
-    HTTP_RESPONSE response;
-    void* buffer;
-    unsigned int bufferSize;
-    HTTP_DATA_CHUNK chunk;
-    int lastChunkSent;
-    BOOL responseStarted;
-    BOOL disconnect;
-    BOOL disconnectProcessed;
-    BOOL closed;
-    uv_httpsys_server_t* uv_httpsys_server;
-    struct uv_httpsys_s* uv_httpsys_peer;
-    Persistent<Object> event;
+	uv_async_t* uv_async;
+	HTTP_REQUEST_ID requestId;
+	HTTP_RESPONSE response;
+	void* buffer;
+	unsigned int bufferSize;
+	HTTP_DATA_CHUNK chunk;
+	int lastChunkSent;
+	BOOL responseStarted;
+	BOOL disconnect;
+	BOOL disconnectProcessed;
+	BOOL closed;
+    BOOL synchronous;
+	BOOL synchronousWrite;
+	int refCount;
+	uv_httpsys_server_t* uv_httpsys_server;
+	struct uv_httpsys_s* uv_httpsys_peer;
+	Nan::Persistent<v8::Object> event;
 } uv_httpsys_t;
 
 // Types of events passed to the JavaScript callback from native
 
 typedef enum {
-    HTTPSYS_ERROR_INITIALIZING_REQUEST = 1,
-    HTTPSYS_ERROR_NEW_REQUEST,
-    HTTPSYS_NEW_REQUEST,
-    HTTPSYS_ERROR_INITIALIZING_READ_REQUEST_BODY,
-    HTTPSYS_END_REQUEST,
-    HTTPSYS_ERROR_READ_REQUEST_BODY,
-    HTTPSYS_REQUEST_BODY,
-    HTTPSYS_WRITTEN,
-    HTTPSYS_ERROR_WRITING,
-    HTTPSYS_SERVER_CLOSED
+	HTTPSYS_ERROR_INITIALIZING_REQUEST = 1,
+	HTTPSYS_ERROR_NEW_REQUEST,
+	HTTPSYS_NEW_REQUEST,
+	HTTPSYS_ERROR_INITIALIZING_READ_REQUEST_BODY,
+	HTTPSYS_END_REQUEST,
+	HTTPSYS_ERROR_READ_REQUEST_BODY,
+	HTTPSYS_REQUEST_BODY,
+	HTTPSYS_WRITTEN,
+	HTTPSYS_ERROR_WRITING,
+	HTTPSYS_SERVER_CLOSED
 } uv_httpsys_event_type;
+
+#define HTTPSYS_HTTP_TRACE 99
 
 // Utility functions
 
@@ -102,23 +119,24 @@ Handle<Object> httpsys_create_client_cert_info(PHTTP_SSL_CLIENT_CERT_INFO info);
 
 // HTTP processing state machine actions and events
 
-void httpsys_new_request_callback(uv_async_t* handle, int status);
-void httpsys_prepare_new_requests(uv_prepare_t* handle, int status);
+void httpsys_new_request_callback(uv_async_t* handle);
+void httpsys_prepare_new_requests(uv_prepare_t* handle);
+void httpsys_read_request_body_callback(uv_async_t* handle);
+void httpsys_write_callback(uv_async_t* handle);
+
 HRESULT httpsys_initiate_new_request(uv_httpsys_t* uv_httpsys);
-void httpsys_read_request_body_callback(uv_async_t* handle, int status);
 HRESULT httpsys_read_request_body_loop(uv_httpsys_t* uv_httpsys);
 HRESULT httpsys_initiate_read_request_body(uv_httpsys_t* uv_httpsys);
-void httpsys_write_callback(uv_async_t* handle, int status);
 
 // Exports
 
-Handle<Value> httpsys_init(const Arguments& args);
-Handle<Value> httpsys_listen(const Arguments& args);
-Handle<Value> httpsys_stop_listen(const Arguments& args);
-Handle<Value> httpsys_resume(const Arguments& args);
-Handle<Value> httpsys_write_headers(const Arguments& args);
-Handle<Value> httpsys_write_body(const Arguments& args);
+void httpsys_init(const Nan::FunctionCallbackInfo<v8::Value>& info);
+void httpsys_listen(const Nan::FunctionCallbackInfo<v8::Value>& info);
+void httpsys_stop_listen(const Nan::FunctionCallbackInfo<v8::Value>& info);
+void httpsys_resume(const Nan::FunctionCallbackInfo<v8::Value>& info);
+void httpsys_write_headers(const Nan::FunctionCallbackInfo<v8::Value>& info);
+void httpsys_write_body(const Nan::FunctionCallbackInfo<v8::Value>& info);
 
-void init(Handle<Object> target);
+void init(v8::Local<v8::Object> target);
 
 #endif
