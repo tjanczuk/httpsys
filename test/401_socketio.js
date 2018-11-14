@@ -1,16 +1,19 @@
-var http = require('../lib/httpsys.js').http()
-    , https = require('../lib/httpsys.js').https()
+//allow self signed certificates
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
+var http = require('httpsys').http()
+    , https = require('httpsys').https()
     , socketio = require('socket.io')
     , socketio_client = require('socket.io-client')
+    , fs = require('fs')    
     , assert = require('assert');
 
+var domain = "http://localhost";
 var port = process.env.PORT || 3401;
 var sslport = process.env.PORT || 3421;
-var server;
 
-// Enable node.js v0.10 to accept self-signed X.509 server certificates as per
-// http://stackoverflow.com/questions/15365772/socket-io-ssl-self-signed-ca-certificate-gives-error-when-connecting
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+var server;
+var serverCert = fs.readFileSync(__dirname + '\\..\\performance\\x509-sha1.pem');
 
 describe('401_socketio.js: socket.io', function () {
 
@@ -31,7 +34,7 @@ describe('401_socketio.js: socket.io', function () {
     });
 
     it('works with HTTP', function (done) {
-        testTransport('xhr-polling', false, done);
+        testTransport('polling', false, done);
     });    
 
     it('works with WSS', function (done) {
@@ -39,32 +42,44 @@ describe('401_socketio.js: socket.io', function () {
     });
 
     it('works with HTTPS', function (done) {
-        testTransport('xhr-polling', true, done);
+        testTransport('polling', true, done);
     });      
 
     function testTransport(transport, secure, done) {
+
+        //create and listen on sever port
         if (secure) {
             server = https.createServer({}, function (req, res) {
                 throw new Error('Regular HTTPS request detected.');
+            });
+
+            server.on('error', function (err) {
+                throw new Error('failed to listen on ' + sslport);
+            }).listen(domain + ":" + sslport + "/", function () {
+                //console.log('listening on ' + sslport);
             });
         }
         else {
             server = http.createServer(function (req, res) {
                 throw new Error('Regular HTTP request detected.');
             });
+
+            server.on('error', function (err) {
+                throw new Error('failed to listen on ' + port);
+            }).listen(domain + ":" + port + "/", function () {
+
+            });
         }
 
+        //configure socketio to listen on server port
         var wss = socketio.listen(server, { log: false });
         var refCount = 2;
-
-        wss.configure(function() {
-            wss.set('transports', [ transport ]);
-        });
 
         var serverLog = [];
         var clientLog = [];
         var toSend = ['one', 'two', 'three', 'four'];
 
+        //configure socketio server event listeners
         wss.sockets.on('connection', function(ws) {
             serverLog.push('connection');
             ws.on('message', function(message) {
@@ -76,17 +91,17 @@ describe('401_socketio.js: socket.io', function () {
             });
         });
 
+        //perform client connection to listening server
         if (secure) {
-            server.listen(sslport);
-            var ws = socketio_client.connect('https://localhost:' + sslport);
-            sslport++; // for subsequent tests
+            var ws = socketio_client.connect(domain + ":" + sslport);
+            sslport++; // for subsequent tests            
         }
         else {
-            server.listen(port);
-            var ws = socketio_client.connect('http://localhost:' + port);
-            port++; // for subsequent tests
+            var ws = socketio_client.connect(domain + ":" + port);
+            port++; // for subsequent tests            
         }
 
+        //configure socketio client event listeners
         ws.on('connect', function() {
             clientLog.push('connect');
             sendNext();
@@ -111,5 +126,4 @@ describe('401_socketio.js: socket.io', function () {
             }
         }        
     }
-
 });
