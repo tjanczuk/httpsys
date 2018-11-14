@@ -3,8 +3,8 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 
 
-var http = require('httpsys').http()
-    , https = require('httpsys').https()
+var http = require('../index').http()
+    , https = require('../index').https()
     , WebSocket = require('ws')
     , WebSocketServer = require('ws').Server
     , fs = require('fs')

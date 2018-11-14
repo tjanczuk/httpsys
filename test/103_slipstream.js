@@ -1,4 +1,4 @@
-require('httpsys').slipstream();
+require('../index').slipstream();
 
 var http = require('http')
     , assert = require('assert');

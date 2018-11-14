@@ -1,8 +1,8 @@
 //allow self signed certificates
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
-var http = require('httpsys').http()
-    , https = require('httpsys').https()
+var http = require('../index').http()
+    , https = require('../index').https()
     , socketio = require('socket.io')
     , socketio_client = require('socket.io-client')
     , fs = require('fs')    
