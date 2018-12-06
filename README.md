@@ -14,7 +14,7 @@ Compared to the built in HTTP[S] stack in Node.js, the httpsys module offers:
 
 ### Compatibility
 
-The httpsys module requires Windows. It works with any stable version of Node.js, both 32- and 64-bit. The module was developed and tested with Node.js 0.6.20, 0.8.22, 0.10.15, each in 32 and 64 bit flavors. 
+The httpsys module requires Windows. It works with any stable version of Node.js, both 32- and 64-bit. The module was developed and tested with Node.js 8.9.4, 9.9.0, 10.13.0, each in 32 and 64 bit flavors. As it makes use of Native Abstractions (nan) for Node.js it should build for other versions of node.
 
 WebSockets functionality requires Windows 8 or Windows Server 2012 or later. 
 
@@ -24,7 +24,7 @@ Any and all feedback is welcome [here](https://github.com/tjanczuk/httpsys/issue
 
 ### Getting started
 
-You must have Windows and a stable version of Node.js installed (0.6, 0.8, 0.10). Then:
+You must have Windows and a recent version of Node.js installed (8, 9, 10). Then:
 
 ```
 npm install httpsys
@@ -217,9 +217,9 @@ The httpsys module exposes the following functions:
 
 ### Building
 
-To build httpsys, you must have Visual Studio 2012 or Visual Studio Express 2012 for Windows Desktop. There are a few ways to build depending on what you want to achieve. 
+To build httpsys, you must have Visual Studio 2015 or Visual Studio Express 2015 for Windows Desktop. There are a few ways to build depending on what you want to achieve. 
 
-To build httpsys for all supported versions and flavors of Node.js: (0.6.20, 0.8.22, 0.10.15) x (x32, x64), call
+To build httpsys for all supported versions and flavors of Node.js: (8.9.4, 9.9.0, 10.13.0) x (x32, x64), call
 
 ```text
 tools\buildall.bat

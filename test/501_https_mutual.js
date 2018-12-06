@@ -1,4 +1,7 @@
-var https = require('../lib/httpsys.js').https()
+//allow self signed certificates
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
+var https = require('../index.js').https()
     , fs = require('fs')
     , assert = require('assert');
 

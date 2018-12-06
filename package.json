@@ -5,28 +5,35 @@
     "url": "http://tomasz.janczuk.org",
     "twitter": "tjanczuk"
   },
-  "version": "0.3.3-pre",
+  "version": "1.0.0",
   "description": "Native HTTP stack for Node.js on Windows",
-  "tags" : ["http", "https", "http.sys", "windows"],
-  "main": "./lib/httpsys.js",
-  "licenses": [ { "type": "Apache", "url": "http://www.apache.org/licenses/LICENSE-2.0" } ],
-  "os": [ "win32" ],
+  "tags": [
+    "http",
+    "https",
+    "http.sys",
+    "windows"
+  ],
+  "main": "./index.js",
+  "licenses": [
+    {
+      "type": "Apache",
+      "url": "http://www.apache.org/licenses/LICENSE-2.0"
+    }
+  ],
+  "os": [
+    "win32"
+  ],
   "devDependencies": {
-    "mocha": "1.8.1",
-    "ws": "0.4.27",
-    "socket.io": "0.9.16",
-    "socket.io-client": "0.9.16"
-  },
-  "homepage": "https://github.com/tjanczuk/httpsys",
-  "repository": {
-    "type": "git",
-    "url": "git@github.com:tjanczuk/httpsys.git"
-  },
-  "bugs" : {
-    "url" : "http://github.com/tjanczuk/httpsys/issues"
+    "mocha": "^5.2.0",
+    "socket.io": "1.4.8",
+    "socket.io-client": "1.4.8"
   },
   "scripts": {
-    "install": "tools\\install.bat",
     "test": "test\\test.bat"
-  }  
-}
+  },
+  "dependencies": {
+    "debug": "4.1.0",
+	"http-status-codes": "1.3.0",
+    "nan": "^2.11.1"
+  }
+} 

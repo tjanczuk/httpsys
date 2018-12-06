@@ -1,5 +1,8 @@
-var http = require('../lib/httpsys.js').http()
-    , https = require('../lib/httpsys.js').https()
+//allow self signed certificates
+//process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
+var http = require('../index').http()
+    , https = require('../index').https()
     , fs = require('fs')
     , assert = require('assert');
 

@@ -2,7 +2,7 @@
 set SELF=%~dp0
 if "%1" equ "" (
     echo Usage: build.bat debug^|release "{version} {version}" ...
-    echo e.g. build.bat release "0.8.22 0.10.0"
+    echo e.g. build.bat release "10.13.0"
     exit /b -1
 )
 
@@ -24,7 +24,7 @@ if "%1" neq "" (
     shift
     goto :harvestVersions
 )
-if "%VERSIONS%" equ "" set VERSIONS=0.10.0
+if "%VERSIONS%" equ "" set VERSIONS=10.13.0
 pushd %SELF%\..
 for %%V in (%VERSIONS%) do call :build ia32 x86 %%V 
 for %%V in (%VERSIONS%) do call :build x64 x64 %%V 
@@ -54,7 +54,7 @@ if not exist "%GYP%" (
     exit /b -1
 )
 
-"%NODEEXE%" "%GYP%" configure build --msvs_version=2012 -%FLAVOR%
+"%NODEEXE%" "%GYP%" configure build --msvs_version=2015 -%FLAVOR%
 if %ERRORLEVEL% neq 0 (
     echo Error building httpsys.node %FLAVOR% for node.js %2 v%3
     exit /b -1

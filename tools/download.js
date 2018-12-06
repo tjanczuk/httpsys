@@ -1,7 +1,7 @@
 var http = require('http');
 
 var url = 'http://nodejs.org/dist/v' + process.argv[3] + '/' 
-	+ (process.argv[2] === 'x86' ? '/node.exe' : '/x64/node.exe');
+	+ (process.argv[2] === 'x86' ? '/win-x86/node.exe' : '/win-x64/node.exe');
 
 console.log(url);
 http.get(url, function (res) {

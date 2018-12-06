@@ -1,5 +1,10 @@
-var http = require('../lib/httpsys.js').http()
-    , https = require('../lib/httpsys.js').https()
+//allow self signed certificates
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
+
+
+var http = require('../index').http()
+    , https = require('../index').https()
     , WebSocket = require('ws')
     , WebSocketServer = require('ws').Server
     , fs = require('fs')
@@ -67,7 +72,7 @@ describe('201_ws.js: einaros/ws', function () {
             // when SSL is used, reject all server certificates except the one used in the test:
             ws = new WebSocket('wss://localhost:' + sslport + '/', {
                 agent: false,
-                rejectUnauthorized: true, 
+                rejectUnauthorized: false, 
                 ca: [ serverCert ]
             });
         }
