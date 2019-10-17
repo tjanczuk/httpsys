@@ -13,7 +13,7 @@
   "os": [ "win32" ],
   "devDependencies": {
     "mocha": "1.8.1",
-    "ws": "0.4.27",
+    "ws": "7.1.2",
     "socket.io": "0.9.16",
     "socket.io-client": "0.9.16"
   },
